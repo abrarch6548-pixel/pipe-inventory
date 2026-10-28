@@ -101,7 +101,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '2.2',
+        'version': '2.3',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
@@ -121,16 +121,14 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       if (canCheck) {
         final bool didAuth = await _auth.authenticate(
           localizedReason: 'Please authenticate with Fingerprint to $actionTitle',
-          options: const AuthenticationOptions(
-            stickyAuth: true,
-            biometricOnly: false,
-          ),
         );
         if (didAuth) return true;
       }
     } catch (e) {
-      debugPrint("Biometric bypass or unsupported: $e");
+      debugPrint("Biometric note: $e");
     }
+
+    if (!mounted) return false;
 
     // 2. Fallback to Master Password / PIN Dialog
     final pinResult = await showDialog<bool>(
@@ -748,123 +746,122 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                       ),
                     ),
                   ),
-                  children: [
-                    if (specMap.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(16.0),
-                        child: Text('No pipes recorded under this category.', style: TextStyle(color: Colors.grey)),
-                      )
-                    else
-                      ...specMap.values.map((spec) {
-                        final size = spec['size']!;
-                        final grade = spec['grade']!;
-                        final sch = spec['sch']!;
+                  children: specMap.isEmpty
+                      ? [
+                          const Padding(
+                            padding: EdgeInsets.all(16.0),
+                            child: Text('No pipes recorded under this category.', style: TextStyle(color: Colors.grey)),
+                          )
+                        ]
+                      : specMap.values.map((spec) {
+                          final size = spec['size']!;
+                          final grade = spec['grade']!;
+                          final sch = spec['sch']!;
 
-                        double coatedRec = 0;
-                        double coatedIss = 0;
-                        for (var t in transactions) {
-                          if (t['category'] == cat &&
-                              (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
-                              (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.toLowerCase() &&
-                              (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
-                              t['internalCoating'] == 'Internal Coated') {
-                            double q = (t['quantity'] as num).toDouble();
-                            if (t['type'] == 'RECEIVE') coatedRec += q;
-                            if (t['type'] == 'ISSUE') coatedIss += q;
+                          double coatedRec = 0;
+                          double coatedIss = 0;
+                          for (var t in transactions) {
+                            if (t['category'] == cat &&
+                                (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
+                                (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.toLowerCase() &&
+                                (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
+                                t['internalCoating'] == 'Internal Coated') {
+                              double q = (t['quantity'] as num).toDouble();
+                              if (t['type'] == 'RECEIVE') coatedRec += q;
+                              if (t['type'] == 'ISSUE') coatedIss += q;
+                            }
                           }
-                        }
-                        double coatedBal = coatedRec - coatedIss;
+                          double coatedBal = coatedRec - coatedIss;
 
-                        double unCoatedRec = 0;
-                        double unCoatedIss = 0;
-                        for (var t in transactions) {
-                          if (t['category'] == cat &&
-                              (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
-                              (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.toLowerCase() &&
-                              (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
-                              t['internalCoating'] == 'Without Internal Coating') {
-                            double q = (t['quantity'] as num).toDouble();
-                            if (t['type'] == 'RECEIVE') unCoatedRec += q;
-                            if (t['type'] == 'ISSUE') unCoatedIss += q;
+                          double unCoatedRec = 0;
+                          double unCoatedIss = 0;
+                          for (var t in transactions) {
+                            if (t['category'] == cat &&
+                                (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
+                                (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.toLowerCase() &&
+                                (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
+                                t['internalCoating'] == 'Without Internal Coating') {
+                              double q = (t['quantity'] as num).toDouble();
+                              if (t['type'] == 'RECEIVE') unCoatedRec += q;
+                              if (t['type'] == 'ISSUE') unCoatedIss += q;
+                            }
                           }
-                        }
-                        double unCoatedBal = unCoatedRec - unCoatedIss;
+                          double unCoatedBal = unCoatedRec - unCoatedIss;
 
-                        return Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade50,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.blueGrey.shade100),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      'Size: $size | Grade: $grade | SCH: $sch',
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+                          return Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.blueGrey.shade100),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        'Size: $size | Grade: $grade | SCH: $sch',
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+                                      ),
                                     ),
-                                  ),
-                                  Text(
-                                    'Net: ${coatedBal + unCoatedBal}',
-                                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
-                                  ),
-                                ],
-                              ),
-                              const Divider(height: 14),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.circle, size: 8, color: Colors.teal),
-                                      const SizedBox(width: 6),
-                                      const Text('Internal Coated:', style: TextStyle(fontWeight: FontWeight.w600)),
-                                      const SizedBox(width: 4),
-                                      Text('(Rec: $coatedRec | Iss: $coatedIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                                    ],
-                                  ),
-                                  Text(
-                                    '$coatedBal Qty',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: coatedBal > 0 ? Colors.green.shade800 : Colors.grey.shade600,
+                                    Text(
+                                      'Net: ${coatedBal + unCoatedBal}',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
                                     ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.circle, size: 8, color: Colors.amber),
-                                      const SizedBox(width: 6),
-                                      const Text('Without Internal Coating:', style: TextStyle(fontWeight: FontWeight.w600)),
-                                      const SizedBox(width: 4),
-                                      Text('(Rec: $unCoatedRec | Iss: $unCoatedIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                                    ],
-                                  ),
-                                  Text(
-                                    '$unCoatedBal Qty',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: unCoatedBal > 0 ? Colors.green.shade800 : Colors.grey.shade600,
+                                  ],
+                                ),
+                                const Divider(height: 14),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Icon(Icons.circle, size: 8, color: Colors.teal),
+                                        const SizedBox(width: 6),
+                                        const Text('Internal Coated:', style: TextStyle(fontWeight: FontWeight.w600)),
+                                        const SizedBox(width: 4),
+                                        Text('(Rec: $coatedRec | Iss: $coatedIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                      ],
                                     ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        );
-                      }).toList(),
-                  ],
+                                    Text(
+                                      '$coatedBal Qty',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: coatedBal > 0 ? Colors.green.shade800 : Colors.grey.shade600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Icon(Icons.circle, size: 8, color: Colors.amber),
+                                        const SizedBox(width: 6),
+                                        const Text('Without Internal Coating:', style: TextStyle(fontWeight: FontWeight.w600)),
+                                        const SizedBox(width: 4),
+                                        Text('(Rec: $unCoatedRec | Iss: $unCoatedIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                      ],
+                                    ),
+                                    Text(
+                                      '$unCoatedBal Qty',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: unCoatedBal > 0 ? Colors.green.shade800 : Colors.grey.shade600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
                 ),
               );
             }).toList(),
@@ -909,7 +906,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                           child: Icon(isReceive ? Icons.download : Icons.upload, color: isReceive ? Colors.green : Colors.orange),
                         ),
                         title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}'),
-                        subtitle: Text('Grade: ${t['pipeGrade']} | SCH: ${t['pipeSch']}\nQty: ${t['quantity']} | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}'),
+                        subtitle: Text('Grade: ${t['pipeGrade']} | SCH: ${t['pipeSch']}\nQty: ${t['quantity']} | Date: ${t['date']}'),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
