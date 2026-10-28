@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
@@ -45,6 +46,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   List<String> issueLocations = ['Yard 1', 'Yard 2', 'Warehouse A', 'Main Site Line'];
   List<String> jpNames = ['JP-Alpha', 'JP-Beta', 'JP-North', 'JP-Pipeline-01'];
 
+  // Security Lock
+  String _securityPin = '1234';
+  final LocalAuthentication _auth = LocalAuthentication();
+
   final List<String> categories = [
     'Bare Pipe', 'Bare Bend', 'Painting Bend', 'Painting Pipe',
     '3LPP Pipe', '3LPP Bend', 'Spool', 'Cut Piece'
@@ -53,6 +58,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   final List<String> coatingOptions = [
     'Internal Coated', 'Without Internal Coating'
   ];
+
+  String _stockSearchQuery = '';
 
   @override
   void initState() {
@@ -82,6 +89,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           if (data['jpNames'] != null) {
             jpNames = List<String>.from(data['jpNames']);
           }
+          if (data['securityPin'] != null) {
+            _securityPin = data['securityPin'].toString();
+          }
         });
       }
     } catch (_) {}
@@ -91,23 +101,104 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '2.0',
+        'version': '2.2',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
         'issueLocations': issueLocations,
         'jpNames': jpNames,
+        'securityPin': _securityPin,
       };
       await file.writeAsString(jsonEncode(payload));
     } catch (_) {}
   }
 
+  // --- BIOMETRIC FINGERPRINT & PASSWORD VERIFICATION ---
+  Future<bool> _authenticateAction(String actionTitle) async {
+    // 1. Try Fingerprint Biometrics
+    try {
+      final bool canCheck = await _auth.canCheckBiometrics || await _auth.isDeviceSupported();
+      if (canCheck) {
+        final bool didAuth = await _auth.authenticate(
+          localizedReason: 'Please authenticate with Fingerprint to $actionTitle',
+          options: const AuthenticationOptions(
+            stickyAuth: true,
+            biometricOnly: false,
+          ),
+        );
+        if (didAuth) return true;
+      }
+    } catch (e) {
+      debugPrint("Biometric bypass or unsupported: $e");
+    }
+
+    // 2. Fallback to Master Password / PIN Dialog
+    final pinResult = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        final pinCtrl = TextEditingController();
+        String errorMsg = '';
+        return StatefulBuilder(
+          builder: (context, setDState) => AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.lock, color: Color(0xFF1E3A8A)),
+                const SizedBox(width: 8),
+                Expanded(child: Text('Security Lock - $actionTitle', style: const TextStyle(fontSize: 16))),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Please enter authorization Password / PIN to proceed:'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: pinCtrl,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    labelText: 'Master PIN / Password',
+                    errorText: errorMsg.isNotEmpty ? errorMsg : null,
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
+                onPressed: () {
+                  if (pinCtrl.text.trim() == _securityPin.trim()) {
+                    Navigator.pop(ctx, true);
+                  } else {
+                    setDState(() {
+                      errorMsg = 'Incorrect Password / PIN!';
+                    });
+                  }
+                },
+                child: const Text('Authorize', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    return pinResult ?? false;
+  }
+
   double _getStock(String size, String grade, String sch, String cat, String coating) {
     double total = 0;
     for (var t in transactions) {
-      if (t['pipeSize'] == size &&
-          t['pipeGrade'] == grade &&
-          t['pipeSch'] == sch &&
+      if ((t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.trim().toLowerCase() &&
+          (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.trim().toLowerCase() &&
+          (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.trim().toLowerCase() &&
           t['category'] == cat &&
           t['internalCoating'] == coating) {
         double qty = (t['quantity'] as num).toDouble();
@@ -118,12 +209,21 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return total;
   }
 
-  void _deleteTransaction(int index) {
+  void _deleteTransaction(int index) async {
+    final authorized = await _authenticateAction('Delete Entry');
+    if (!authorized) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
+      }
+      return;
+    }
+
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Entry Confirmation', style: TextStyle(color: Colors.red)),
-        content: const Text('Are you sure you want to delete this inventory entry? Stock balance will update automatically.'),
+        content: const Text('Are you sure you want to permanently delete this inventory entry? Stock balance will update automatically.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
@@ -145,7 +245,16 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  void _editTransaction(int index) {
+  void _editTransaction(int index) async {
+    final authorized = await _authenticateAction('Edit Entry');
+    if (!authorized) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
+      }
+      return;
+    }
+
+    if (!mounted) return;
     final t = transactions[index];
     final serialCtrl = TextEditingController(text: t['serial'] ?? '');
     final sizeCtrl = TextEditingController(text: t['pipeSize'] ?? '');
@@ -236,7 +345,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           NavigationDestination(icon: Icon(Icons.upload), label: 'Issue'),
           NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Stock'),
           NavigationDestination(icon: Icon(Icons.history), label: 'History & Edit'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Manage & Backup'),
+          NavigationDestination(icon: Icon(Icons.settings), label: 'Manage & Security'),
         ],
       ),
     );
@@ -323,7 +432,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               color: t['type'] == 'RECEIVE' ? Colors.green : Colors.orange,
             ),
             title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}'),
-            subtitle: Text('Qty: ${t['quantity']} | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}'),
+            subtitle: Text('Grade: ${t['pipeGrade']} | SCH: ${t['pipeSch']}\nQty: ${t['quantity']} | Date: ${t['date']}'),
             trailing: Chip(
               label: Text(t['type'], style: const TextStyle(color: Colors.white, fontSize: 11)),
               backgroundColor: t['type'] == 'RECEIVE' ? Colors.green : Colors.orange,
@@ -354,8 +463,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             const SizedBox(height: 12),
             TextField(controller: serialCtrl, decoration: const InputDecoration(labelText: 'Serial Number / Pipe ID *')),
             TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size (e.g., 24") *')),
-            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (e.g., X65) *')),
-            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (e.g., SCH 80) *')),
+            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (e.g., X52, X65) *')),
+            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (e.g., 12.7, SCH 80) *')),
             DropdownButtonFormField<String>(
               value: cat,
               items: categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
@@ -379,11 +488,21 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             const SizedBox(height: 20),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A), padding: const EdgeInsets.symmetric(vertical: 14)),
-              onPressed: () {
-                if (qtyCtrl.text.isEmpty || sizeCtrl.text.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill mandatory fields!')));
+              onPressed: () async {
+                if (qtyCtrl.text.isEmpty || sizeCtrl.text.isEmpty || gradeCtrl.text.isEmpty || schCtrl.text.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill all mandatory fields!')));
                   return;
                 }
+
+                // Security Authorization Prompt
+                final authorized = await _authenticateAction('Add Receiving Entry');
+                if (!authorized) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
+                  }
+                  return;
+                }
+
                 setState(() {
                   transactions.add({
                     'id': const Uuid().v4(),
@@ -401,10 +520,19 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   });
                 });
                 _saveData();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Pipes Received and Stock Incremented!')));
-                setState(() => _navIndex = 0);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authorized: Pipes Received and Stock Incremented!')));
+                  setState(() => _navIndex = 0);
+                }
               },
-              child: const Text('SUBMIT RECEIVING TRANSACTION', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.fingerprint, color: Colors.white),
+                  SizedBox(width: 8),
+                  Text('AUTHORIZE & SUBMIT RECEIVING', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ],
+              ),
             ),
           ],
         );
@@ -440,15 +568,15 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 border: Border.all(color: currentStock > 0 ? Colors.green : Colors.red),
               ),
               child: Text(
-                'Available Stock for Configuration: $currentStock Qty',
+                'Available Stock for this Spec: $currentStock Qty',
                 style: TextStyle(fontWeight: FontWeight.bold, color: currentStock > 0 ? Colors.green.shade800 : Colors.red.shade800),
               ),
             ),
             const SizedBox(height: 8),
             TextField(controller: serialCtrl, decoration: const InputDecoration(labelText: 'Serial Number / Pipe ID')),
             TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size *'), onChanged: (_) => setSub(() {})),
-            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade *'), onChanged: (_) => setSub(() {})),
-            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH *'), onChanged: (_) => setSub(() {})),
+            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (e.g. X52) *'), onChanged: (_) => setSub(() {})),
+            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (e.g. 12.7) *'), onChanged: (_) => setSub(() {})),
             DropdownButtonFormField<String>(
               value: cat,
               items: categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
@@ -478,7 +606,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             const SizedBox(height: 20),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEA580C), padding: const EdgeInsets.symmetric(vertical: 14)),
-              onPressed: () {
+              onPressed: () async {
                 double req = double.tryParse(qtyCtrl.text) ?? 0;
                 if (req <= 0) return;
                 if (req > currentStock) {
@@ -486,12 +614,22 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     context: context,
                     builder: (ctx) => AlertDialog(
                       title: const Text('Insufficient Stock Blocked', style: TextStyle(color: Colors.red)),
-                      content: Text('Cannot issue $req pipes. Only $currentStock available in store.'),
+                      content: Text('Cannot issue $req pipes. Only $currentStock available for Size: ${sizeCtrl.text}, Grade: ${gradeCtrl.text}, SCH: ${schCtrl.text}.'),
                       actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
                     ),
                   );
                   return;
                 }
+
+                // Security Authorization Prompt
+                final authorized = await _authenticateAction('Issue Pipe Stock');
+                if (!authorized) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
+                  }
+                  return;
+                }
+
                 setState(() {
                   transactions.add({
                     'id': const Uuid().v4(),
@@ -510,10 +648,19 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   });
                 });
                 _saveData();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Pipes Issued and Deducted Successfully!')));
-                setState(() => _navIndex = 0);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authorized: Pipes Issued and Deducted Successfully!')));
+                  setState(() => _navIndex = 0);
+                }
               },
-              child: const Text('SUBMIT ISSUING TRANSACTION', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.fingerprint, color: Colors.white),
+                  SizedBox(width: 8),
+                  Text('AUTHORIZE & SUBMIT ISSUING', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ],
+              ),
             ),
           ],
         );
@@ -521,45 +668,208 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // --- DETAILED STOCK BREAKDOWN BY SIZE, GRADE, SCH & COATING ---
   Widget _buildStock() {
-    return ListView(
-      padding: const EdgeInsets.all(16),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Current Live Stock Balances', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 12),
-        ...categories.map((c) {
-          return Card(
-            margin: const EdgeInsets.only(bottom: 8),
-            child: ExpansionTile(
-              title: Text(c, style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E3A8A))),
-              children: coatingOptions.map((coat) {
-                double bal = 0;
-                double rec = 0;
-                double iss = 0;
-                for (var t in transactions) {
-                  if (t['category'] == c && t['internalCoating'] == coat) {
-                    double q = (t['quantity'] as num).toDouble();
-                    if (t['type'] == 'RECEIVE') rec += q;
-                    if (t['type'] == 'ISSUE') iss += q;
+        Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: TextField(
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.search),
+              hintText: 'Search by Grade (X52), SCH (12.7), Size (24")...',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+            ),
+            onChanged: (val) {
+              setState(() {
+                _stockSearchQuery = val.trim().toLowerCase();
+              });
+            },
+          ),
+        ),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            children: categories.map((cat) {
+              final specMap = <String, Map<String, String>>{};
+              for (var t in transactions) {
+                if (t['category'] == cat) {
+                  final s = (t['pipeSize'] ?? '').toString().trim();
+                  final g = (t['pipeGrade'] ?? '').toString().trim();
+                  final sch = (t['pipeSch'] ?? '').toString().trim();
+                  final key = '$s|$g|$sch';
+
+                  if (_stockSearchQuery.isNotEmpty) {
+                    final match = s.toLowerCase().contains(_stockSearchQuery) ||
+                        g.toLowerCase().contains(_stockSearchQuery) ||
+                        sch.toLowerCase().contains(_stockSearchQuery);
+                    if (!match) continue;
+                  }
+
+                  if (!specMap.containsKey(key)) {
+                    specMap[key] = {'size': s, 'grade': g, 'sch': sch};
                   }
                 }
-                bal = rec - iss;
-                return ListTile(
-                  title: Text(coat),
-                  subtitle: Text('Total Rec: $rec | Total Iss: $iss'),
-                  trailing: Text(
-                    '$bal Qty',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: bal > 0 ? Colors.green.shade800 : Colors.grey,
+              }
+
+              double catTotal = 0;
+              for (var t in transactions) {
+                if (t['category'] == cat) {
+                  double q = (t['quantity'] as num).toDouble();
+                  if (t['type'] == 'RECEIVE') catTotal += q;
+                  if (t['type'] == 'ISSUE') catTotal -= q;
+                }
+              }
+
+              return Card(
+                margin: const EdgeInsets.only(bottom: 10),
+                elevation: 2,
+                child: ExpansionTile(
+                  initiallyExpanded: specMap.isNotEmpty,
+                  title: Text(
+                    cat,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1E3A8A)),
+                  ),
+                  trailing: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: catTotal > 0 ? Colors.green.shade50 : Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: catTotal > 0 ? Colors.green : Colors.grey),
+                    ),
+                    child: Text(
+                      'Total: $catTotal',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        color: catTotal > 0 ? Colors.green.shade800 : Colors.grey.shade700,
+                      ),
                     ),
                   ),
-                );
-              }).toList(),
-            ),
-          );
-        }),
+                  children: [
+                    if (specMap.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(16.0),
+                        child: Text('No pipes recorded under this category.', style: TextStyle(color: Colors.grey)),
+                      )
+                    else
+                      ...specMap.values.map((spec) {
+                        final size = spec['size']!;
+                        final grade = spec['grade']!;
+                        final sch = spec['sch']!;
+
+                        double coatedRec = 0;
+                        double coatedIss = 0;
+                        for (var t in transactions) {
+                          if (t['category'] == cat &&
+                              (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
+                              (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.toLowerCase() &&
+                              (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
+                              t['internalCoating'] == 'Internal Coated') {
+                            double q = (t['quantity'] as num).toDouble();
+                            if (t['type'] == 'RECEIVE') coatedRec += q;
+                            if (t['type'] == 'ISSUE') coatedIss += q;
+                          }
+                        }
+                        double coatedBal = coatedRec - coatedIss;
+
+                        double unCoatedRec = 0;
+                        double unCoatedIss = 0;
+                        for (var t in transactions) {
+                          if (t['category'] == cat &&
+                              (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
+                              (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.toLowerCase() &&
+                              (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
+                              t['internalCoating'] == 'Without Internal Coating') {
+                            double q = (t['quantity'] as num).toDouble();
+                            if (t['type'] == 'RECEIVE') unCoatedRec += q;
+                            if (t['type'] == 'ISSUE') unCoatedIss += q;
+                          }
+                        }
+                        double unCoatedBal = unCoatedRec - unCoatedIss;
+
+                        return Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blueGrey.shade100),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      'Size: $size | Grade: $grade | SCH: $sch',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+                                    ),
+                                  ),
+                                  Text(
+                                    'Net: ${coatedBal + unCoatedBal}',
+                                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
+                                  ),
+                                ],
+                              ),
+                              const Divider(height: 14),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.circle, size: 8, color: Colors.teal),
+                                      const SizedBox(width: 6),
+                                      const Text('Internal Coated:', style: TextStyle(fontWeight: FontWeight.w600)),
+                                      const SizedBox(width: 4),
+                                      Text('(Rec: $coatedRec | Iss: $coatedIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                    ],
+                                  ),
+                                  Text(
+                                    '$coatedBal Qty',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: coatedBal > 0 ? Colors.green.shade800 : Colors.grey.shade600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.circle, size: 8, color: Colors.amber),
+                                      const SizedBox(width: 6),
+                                      const Text('Without Internal Coating:', style: TextStyle(fontWeight: FontWeight.w600)),
+                                      const SizedBox(width: 4),
+                                      Text('(Rec: $unCoatedRec | Iss: $unCoatedIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                    ],
+                                  ),
+                                  Text(
+                                    '$unCoatedBal Qty',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: unCoatedBal > 0 ? Colors.green.shade800 : Colors.grey.shade600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ),
       ],
     );
   }
@@ -572,11 +882,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           color: Colors.blue.shade50,
           child: Row(
             children: [
-              const Icon(Icons.info_outline, color: Color(0xFF1E3A8A)),
+              const Icon(Icons.security, color: Color(0xFF1E3A8A)),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Total Entries Recorded: ${transactions.length}\nAap kisi bhi ghalat entry ko edit ya delete kar sakte hain.',
+                  'Total Entries: ${transactions.length}\nEditing aur Deletion Security Lock se protected hain.',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
@@ -598,19 +908,19 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                           backgroundColor: isReceive ? Colors.green.shade100 : Colors.orange.shade100,
                           child: Icon(isReceive ? Icons.download : Icons.upload, color: isReceive ? Colors.green : Colors.orange),
                         ),
-                        title: Text('${t['category']} (${t['pipeSize']} / ${t['pipeGrade']})'),
-                        subtitle: Text('Qty: ${t['quantity']} | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}'),
+                        title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}'),
+                        subtitle: Text('Grade: ${t['pipeGrade']} | SCH: ${t['pipeSch']}\nQty: ${t['quantity']} | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}'),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
                               icon: const Icon(Icons.edit, color: Colors.blue),
-                              tooltip: 'Edit Entry',
+                              tooltip: 'Edit Entry (Locked)',
                               onPressed: () => _editTransaction(index),
                             ),
                             IconButton(
                               icon: const Icon(Icons.delete, color: Colors.red),
-                              tooltip: 'Delete Entry',
+                              tooltip: 'Delete Entry (Locked)',
                               onPressed: () => _deleteTransaction(index),
                             ),
                           ],
@@ -633,7 +943,103 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Backup & Data Protection', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        // --- MASTER SECURITY SETTINGS ---
+        const Text('Security & Access Protection', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Card(
+          color: Colors.amber.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.fingerprint, color: Color(0xFF1E3A8A), size: 28),
+                    SizedBox(width: 8),
+                    Text('Fingerprint & Password Authorization', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const Text('New Entry, Edit, aur Delete sab security lock se protected hain.'),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Current Master PIN:  $_securityPin', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
+                      icon: const Icon(Icons.pin, color: Colors.white, size: 16),
+                      label: const Text('Change PIN', style: TextStyle(color: Colors.white)),
+                      onPressed: () {
+                        final oldPinCtrl = TextEditingController();
+                        final newPinCtrl = TextEditingController();
+                        String errorTxt = '';
+
+                        showDialog(
+                          context: context,
+                          builder: (ctx) => StatefulBuilder(
+                            builder: (context, setDState) => AlertDialog(
+                              title: const Text('Change Security PIN'),
+                              content: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  TextField(
+                                    controller: oldPinCtrl,
+                                    obscureText: true,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(labelText: 'Current PIN'),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  TextField(
+                                    controller: newPinCtrl,
+                                    obscureText: true,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(labelText: 'New PIN (e.g. 4 digits)'),
+                                  ),
+                                  if (errorTxt.isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(errorTxt, style: const TextStyle(color: Colors.red)),
+                                  ],
+                                ],
+                              ),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                                ElevatedButton(
+                                  onPressed: () {
+                                    if (oldPinCtrl.text.trim() != _securityPin.trim()) {
+                                      setDState(() => errorTxt = 'Current PIN is incorrect!');
+                                      return;
+                                    }
+                                    if (newPinCtrl.text.trim().isEmpty) {
+                                      setDState(() => errorTxt = 'Enter valid new PIN!');
+                                      return;
+                                    }
+                                    setState(() {
+                                      _securityPin = newPinCtrl.text.trim();
+                                    });
+                                    _saveData();
+                                    Navigator.pop(ctx);
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('Master Security PIN Updated Successfully!')),
+                                    );
+                                  },
+                                  child: const Text('Update PIN'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const Divider(height: 28),
+        const Text('Backup & Data Protection', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Card(
           color: Colors.blue.shade50,
@@ -656,10 +1062,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                       'receivingLocations': receivingLocations,
                       'issueLocations': issueLocations,
                       'jpNames': jpNames,
+                      'securityPin': _securityPin,
                     };
                     final jsonStr = jsonEncode(payload);
                     Clipboard.setData(ClipboardData(text: jsonStr));
-                    
+
                     final dir = await getApplicationDocumentsDirectory();
                     final bFile = File('${dir.path}/pipe_backup_${DateTime.now().millisecondsSinceEpoch}.json');
                     await bFile.writeAsString(jsonStr);
@@ -699,8 +1106,13 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
                   icon: const Icon(Icons.restore, color: Colors.white),
                   label: const Text('RESTORE DATA NOW', style: TextStyle(color: Colors.white)),
-                  onPressed: () {
+                  onPressed: () async {
                     if (restoreTextCtrl.text.isEmpty) return;
+                    final authorized = await _authenticateAction('Restore Database');
+                    if (!authorized) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
+                      return;
+                    }
                     try {
                       final data = jsonDecode(restoreTextCtrl.text.trim());
                       setState(() {
@@ -708,6 +1120,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                         if (data['receivingLocations'] != null) receivingLocations = List<String>.from(data['receivingLocations']);
                         if (data['issueLocations'] != null) issueLocations = List<String>.from(data['issueLocations']);
                         if (data['jpNames'] != null) jpNames = List<String>.from(data['jpNames']);
+                        if (data['securityPin'] != null) _securityPin = data['securityPin'].toString();
                       });
                       _saveData();
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Data Restored Successfully!')));
@@ -720,7 +1133,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             ),
           ),
         ),
-        const Divider(height: 32),
+        const Divider(height: 28),
         const Text('Receiving Locations Management', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         Row(
           children: [
@@ -744,7 +1157,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             _saveData();
           },
         )).toList()),
-        const Divider(height: 32),
+        const Divider(height: 28),
         const Text('Issue Destination Locations', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         Row(
           children: [
@@ -768,7 +1181,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             _saveData();
           },
         )).toList()),
-        const Divider(height: 32),
+        const Divider(height: 28),
         const Text('JP Names (Joint Proposals)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         Row(
           children: [
