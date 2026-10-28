@@ -24,9 +24,10 @@ jobs:
 
       - name: Build Release APK
         run: |
-          cp lib/main.dart /tmp/main.dart
-          flutter create . --platforms=android --org com.pipestore
-          cp /tmp/main.dart lib/main.dart
+          mkdir -p /tmp/backup
+          if [ -f lib/main.dart ]; then cp lib/main.dart /tmp/backup/main.dart; fi
+          flutter create --project-name pipe_inventory --platforms=android --org com.pipestore .
+          if [ -f /tmp/backup/main.dart ]; then cp /tmp/backup/main.dart lib/main.dart; fi
           flutter pub add intl uuid path_provider
           flutter build apk --release --split-per-abi=false
 
