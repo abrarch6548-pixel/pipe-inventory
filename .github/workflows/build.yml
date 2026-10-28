@@ -1,10 +1,10 @@
-name: Build Pipe Store Inventory Apps
+name: Build Pipe Store APK
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-apps:
+  build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
     steps:
@@ -22,93 +22,16 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Generate Pipe Store Application
+      - name: Build Release APK
         run: |
-          flutter create --org com.pipestore pipe_inventory_app
-          cd pipe_inventory_app
+          cp lib/main.dart /tmp/main.dart
+          flutter create . --platforms=android --org com.pipestore
+          cp /tmp/main.dart lib/main.dart
           flutter pub add intl uuid path_provider
+          flutter build apk --release --split-per-abi=false
 
-          cat << 'EOF' > lib/main.dart
-          import 'dart:convert';
-          import 'dart:io';
-          import 'package:flutter/material.dart';
-          import 'package:intl/intl.dart';
-          import 'package:path_provider/path_provider.dart';
-          import 'package:uuid/uuid.dart';
-
-          void main() {
-            runApp(const PipeStoreApp());
-          }
-
-          class PipeStoreApp extends StatelessWidget {
-            const PipeStoreApp({super.key});
-
-            @override
-            Widget build(BuildContext context) {
-              return MaterialApp(
-                title: 'Pipe Store Inventory',
-                debugShowCheckedModeBanner: false,
-                theme: ThemeData(
-                  useMaterial3: true,
-                  colorScheme: ColorScheme.fromSeed(
-                    seedColor: const Color(0xFF1E3A8A),
-                    primary: const Color(0xFF1E3A8A),
-                    secondary: const Color(0xFFEA580C),
-                  ),
-                ),
-                home: const MainInventoryScreen(),
-              );
-            }
-          }
-
-          class MainInventoryScreen extends StatefulWidget {
-            const MainInventoryScreen({super.key});
-            @override
-            State<MainInventoryScreen> createState() => _MainInventoryScreenState();
-          }
-
-          class _MainInventoryScreenState extends State<MainInventoryScreen> {
-            int _navIndex = 0;
-            List<Map<String, dynamic>> transactions = [];
-            List<String> locations = ['Yard 1', 'Yard 2', 'Warehouse A', 'Main Rack'];
-            List<String> jpNames = ['JP-Alpha', 'JP-Beta', 'JP-North', 'JP-Pipeline-01'];
-            List<String> suppliers = ['Steel Mills Corp', 'National Tubes Ltd', 'Atlas Piping'];
-
-            final List<String> categories = [
-              'Bare Pipe', 'Bare Bend', 'Painting Bend', 'Painting Pipe',
-              '3LPP Pipe', '3LPP Bend', 'Spool', 'Cut Piece'
-            ];
-
-            final List<String> coatingOptions = [
-              'Internal Coated', 'Without Internal Coating'
-            ];
-
-            @override
-            void initState() {
-              super.initState();
-              _loadData();
-            }
-
-            Future<File> _getFile() async {
-              final dir = await getApplicationDocumentsDirectory();
-              return File('${dir.path}/pipe_inventory_data.json');
-            }
-
-            Future<void> _loadData() async {
-              try {
-                final file = await _getFile();
-                if (await file.exists()) {
-                  final content = await file.readAsString();
-                  final data = jsonDecode(content);
-                  setState(() {
-                    transactions = List<Map<String, dynamic>>.from(data['transactions'] ?? []);
-                    if (data['locations'] != null) locations = List<String>.from(data['locations']);
-                    if (data['jpNames'] != null) jpNames = List<String>.from(data['jpNames']);
-                    if (data['suppliers'] != null) suppliers = List<String>.from(data['suppliers']);
-                  });
-                }
-              } catch (_) {}
-            }
-
-            Future<void> _saveData() async {
-              try {
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PipeStore-Android-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
