@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:local_auth/local_auth.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
@@ -46,9 +45,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   List<String> issueLocations = ['Yard 1', 'Yard 2', 'Warehouse A', 'Main Site Line'];
   List<String> jpNames = ['JP-Alpha', 'JP-Beta', 'JP-North', 'JP-Pipeline-01'];
 
-  // Security Lock
+  // Master Security PIN (Default: 1234)
   String _securityPin = '1234';
-  final LocalAuthentication _auth = LocalAuthentication();
 
   final List<String> categories = [
     'Bare Pipe', 'Bare Bend', 'Painting Bend', 'Painting Pipe',
@@ -101,7 +99,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '2.3',
+        'version': '2.4',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
@@ -113,24 +111,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     } catch (_) {}
   }
 
-  // --- BIOMETRIC FINGERPRINT & PASSWORD VERIFICATION ---
+  // --- SECURITY PIN / PASSWORD DIALOG ---
   Future<bool> _authenticateAction(String actionTitle) async {
-    // 1. Try Fingerprint Biometrics
-    try {
-      final bool canCheck = await _auth.canCheckBiometrics || await _auth.isDeviceSupported();
-      if (canCheck) {
-        final bool didAuth = await _auth.authenticate(
-          localizedReason: 'Please authenticate with Fingerprint to $actionTitle',
-        );
-        if (didAuth) return true;
-      }
-    } catch (e) {
-      debugPrint("Biometric note: $e");
-    }
-
-    if (!mounted) return false;
-
-    // 2. Fallback to Master Password / PIN Dialog
     final pinResult = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -143,13 +125,13 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               children: [
                 const Icon(Icons.lock, color: Color(0xFF1E3A8A)),
                 const SizedBox(width: 8),
-                Expanded(child: Text('Security Lock - $actionTitle', style: const TextStyle(fontSize: 16))),
+                Expanded(child: Text('Security Lock - $actionTitle', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))),
               ],
             ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text('Please enter authorization Password / PIN to proceed:'),
+                const Text('Please enter authorization PIN to proceed:'),
                 const SizedBox(height: 12),
                 TextField(
                   controller: pinCtrl,
@@ -157,9 +139,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   keyboardType: TextInputType.number,
                   autofocus: true,
                   decoration: InputDecoration(
-                    labelText: 'Master PIN / Password',
+                    labelText: 'Master Security PIN (Default: 1234)',
                     errorText: errorMsg.isNotEmpty ? errorMsg : null,
                     border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.pin),
                   ),
                 ),
               ],
@@ -176,7 +159,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     Navigator.pop(ctx, true);
                   } else {
                     setDState(() {
-                      errorMsg = 'Incorrect Password / PIN!';
+                      errorMsg = 'Incorrect PIN! Try again.';
                     });
                   }
                 },
@@ -492,7 +475,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   return;
                 }
 
-                // Security Authorization Prompt
+                // Security PIN Authorization
                 final authorized = await _authenticateAction('Add Receiving Entry');
                 if (!authorized) {
                   if (context.mounted) {
@@ -526,7 +509,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.fingerprint, color: Colors.white),
+                  Icon(Icons.lock, color: Colors.white, size: 20),
                   SizedBox(width: 8),
                   Text('AUTHORIZE & SUBMIT RECEIVING', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 ],
@@ -619,7 +602,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   return;
                 }
 
-                // Security Authorization Prompt
+                // Security PIN Authorization
                 final authorized = await _authenticateAction('Issue Pipe Stock');
                 if (!authorized) {
                   if (context.mounted) {
@@ -654,7 +637,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.fingerprint, color: Colors.white),
+                  Icon(Icons.lock, color: Colors.white, size: 20),
                   SizedBox(width: 8),
                   Text('AUTHORIZE & SUBMIT ISSUING', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 ],
@@ -952,9 +935,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               children: [
                 const Row(
                   children: [
-                    Icon(Icons.fingerprint, color: Color(0xFF1E3A8A), size: 28),
+                    Icon(Icons.lock, color: Color(0xFF1E3A8A), size: 28),
                     SizedBox(width: 8),
-                    Text('Fingerprint & Password Authorization', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text('Master PIN / Password Authorization', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -963,7 +946,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text('Current Master PIN:  $_securityPin', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                    Text('Current PIN:  $_securityPin', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
                       icon: const Icon(Icons.pin, color: Colors.white, size: 16),
