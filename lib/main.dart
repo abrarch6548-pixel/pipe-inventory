@@ -107,7 +107,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '3.2',
+        'version': '3.4',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
@@ -118,6 +118,90 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       };
       await file.writeAsString(jsonEncode(payload));
     } catch (_) {}
+  }
+
+  // --- ACCURATE REAL-TIME STOCK BALANCE ENGINE ---
+  // Calculates live physical stock in yard for all categories.
+  // Painting returns stay in Painting pool!
+  // Painting issues first consume ready painted stock; excess consumes Bare stock.
+  Map<String, double> _calculateSpecStocks(String size, String grade, String sch, String coating) {
+    final Map<String, double> stocks = {for (var c in categories) c: 0.0};
+
+    for (var t in transactions) {
+      final tSize = (t['pipeSize'] ?? '').toString().trim().toLowerCase();
+      final tGrade = (t['pipeGrade'] ?? '').toString().trim().toLowerCase();
+      final tSch = (t['pipeSch'] ?? '').toString().trim().toLowerCase();
+      final tCoat = (t['internalCoating'] ?? '').toString().trim();
+
+      if (tSize == size.trim().toLowerCase() &&
+          tGrade == grade.trim().toLowerCase() &&
+          tSch == sch.trim().toLowerCase() &&
+          tCoat == coating.trim()) {
+
+        double q = (t['quantity'] as num).toDouble();
+        final cat = t['category'] ?? '';
+        final type = t['type'] ?? '';
+
+        if (cat == 'Painting Pipe') {
+          if (type == 'RECEIVE' || type == 'RETURN') {
+            // Returned painted pipes sit in Painting Pipe pool!
+            stocks['Painting Pipe'] = (stocks['Painting Pipe'] ?? 0) + q;
+          } else if (type == 'ISSUE') {
+            double ready = stocks['Painting Pipe'] ?? 0;
+            if (ready >= q) {
+              stocks['Painting Pipe'] = ready - q;
+            } else {
+              double rem = q - ready;
+              stocks['Painting Pipe'] = 0;
+              stocks['Bare Pipe'] = (stocks['Bare Pipe'] ?? 0) - rem;
+            }
+          }
+        } else if (cat == 'Painting Bend') {
+          if (type == 'RECEIVE' || type == 'RETURN') {
+            // Returned painted bends sit in Painting Bend pool!
+            stocks['Painting Bend'] = (stocks['Painting Bend'] ?? 0) + q;
+          } else if (type == 'ISSUE') {
+            double ready = stocks['Painting Bend'] ?? 0;
+            if (ready >= q) {
+              stocks['Painting Bend'] = ready - q;
+            } else {
+              double rem = q - ready;
+              stocks['Painting Bend'] = 0;
+              stocks['Bare Bend'] = (stocks['Bare Bend'] ?? 0) - rem;
+            }
+          }
+        } else {
+          // Standard Categories (Bare Pipe, Bare Bend, 3LPP, Spool, Cut Piece)
+          if (type == 'RECEIVE' || type == 'RETURN') {
+            stocks[cat] = (stocks[cat] ?? 0) + q;
+          } else if (type == 'ISSUE') {
+            stocks[cat] = (stocks[cat] ?? 0) - q;
+          }
+        }
+      }
+    }
+    return stocks;
+  }
+
+  // Returns physical stock sitting in store for this category
+  double _getPhysicalStock(String size, String grade, String sch, String cat, String coating) {
+    final specStocks = _calculateSpecStocks(size, grade, sch, coating);
+    return specStocks[cat] ?? 0.0;
+  }
+
+  // Returns total quantity available to issue (including bare pipes that can be painted)
+  double _getTotalAvailableToIssue(String size, String grade, String sch, String cat, String coating) {
+    final specStocks = _calculateSpecStocks(size, grade, sch, coating);
+    if (cat == 'Painting Pipe') {
+      final ready = specStocks['Painting Pipe'] ?? 0.0;
+      final bare = specStocks['Bare Pipe'] ?? 0.0;
+      return ready + (bare > 0 ? bare : 0.0);
+    } else if (cat == 'Painting Bend') {
+      final ready = specStocks['Painting Bend'] ?? 0.0;
+      final bare = specStocks['Bare Bend'] ?? 0.0;
+      return ready + (bare > 0 ? bare : 0.0);
+    }
+    return specStocks[cat] ?? 0.0;
   }
 
   // --- EXCEL (.CSV) & PDF (.HTML PRINTABLE) EXPORT ENGINE ---
@@ -132,50 +216,36 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
     if (reportType == 'STOCK') {
       if (!isPdf) {
-        // EXCEL FORMAT
         final StringBuffer csv = StringBuffer();
-        csv.writeln('Category,Size,Grade,SCH,Coating,Total Received,Total Returned,Total Issued,Available Balance');
+        csv.writeln('Category,Size,Grade,SCH,Coating,In-Store Physical Balance,Notes');
         for (var cat in categories) {
           final specMap = <String, Map<String, String>>{};
           for (var t in transactions) {
-            if (t['category'] == cat) {
-              final s = (t['pipeSize'] ?? '').toString().trim();
-              final g = (t['pipeGrade'] ?? '').toString().trim();
-              final sch = (t['pipeSch'] ?? '').toString().trim();
-              specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
-            }
+            final s = (t['pipeSize'] ?? '').toString().trim();
+            final g = (t['pipeGrade'] ?? '').toString().trim();
+            final sch = (t['pipeSch'] ?? '').toString().trim();
+            specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
           }
           for (var spec in specMap.values) {
             final s = spec['size']!;
             final g = spec['grade']!;
             final sch = spec['sch']!;
             for (var coat in coatingOptions) {
-              double rec = 0, ret = 0, iss = 0;
-              for (var t in transactions) {
-                if (t['category'] == cat &&
-                    (t['pipeSize'] ?? '').toString().trim().toLowerCase() == s.toLowerCase() &&
-                    (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == g.toLowerCase() &&
-                    (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
-                    t['internalCoating'] == coat) {
-                  double q = (t['quantity'] as num).toDouble();
-                  if (t['type'] == 'RECEIVE') rec += q;
-                  if (t['type'] == 'RETURN') ret += q;
-                  if (t['type'] == 'ISSUE') iss += q;
-                }
-              }
-              double bal = (rec + ret) - iss;
-              if (rec > 0 || ret > 0 || iss > 0) {
-                csv.writeln('"$cat","$s","$g","$sch","$coat",$rec,$ret,$iss,$bal');
+              double bal = _getPhysicalStock(s, g, sch, cat, coat);
+              String note = (cat == 'Painting Pipe' || cat == 'Painting Bend')
+                  ? 'Returned / Ready Painted Stock in Yard'
+                  : 'Unpainted Physical Stock';
+              if (bal > 0) {
+                csv.writeln('"$cat","$s","$g","$sch","$coat",$bal,"$note"');
               }
             }
           }
         }
         content = csv.toString();
       } else {
-        // PDF / PRINTABLE HTML FORMAT
         final StringBuffer html = StringBuffer();
         html.writeln('''<!DOCTYPE html><html><head><meta charset="utf-8">
-        <title>Pipe Store Inventory - Stock Report</title>
+        <title>Pipe Store Inventory - Stock Balance Report</title>
         <style>
           body { font-family: Segoe UI, Arial, sans-serif; margin: 25px; color: #1e293b; }
           .header { border-bottom: 3px solid #1E3A8A; padding-bottom: 10px; margin-bottom: 20px; }
@@ -192,43 +262,31 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         <div class="no-print"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
         <div class="header">
           <h1>Pipe Store Inventory Management System</h1>
-          <div class="sub">Report: <b>Current Live Stock Balance Summary</b> | Date Generated: $printDate</div>
+          <div class="sub">Report: <b>Live Stock Balance Sheet</b> | Date: $printDate<br><i>*Painting Pipe & Painting Bend show ready-painted pipes physically present in yard.</i></div>
         </div>
         <table><thead><tr>
-          <th>Category</th><th>Size</th><th>Grade</th><th>SCH</th><th>Coating</th><th>Received</th><th>Returned</th><th>Issued</th><th>Available Balance</th>
+          <th>Category</th><th>Size</th><th>Grade</th><th>SCH</th><th>Coating</th><th>In-Yard Physical Balance</th><th>Stock Type</th>
         </tr></thead><tbody>''');
 
         for (var cat in categories) {
           final specMap = <String, Map<String, String>>{};
           for (var t in transactions) {
-            if (t['category'] == cat) {
-              final s = (t['pipeSize'] ?? '').toString().trim();
-              final g = (t['pipeGrade'] ?? '').toString().trim();
-              final sch = (t['pipeSch'] ?? '').toString().trim();
-              specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
-            }
+            final s = (t['pipeSize'] ?? '').toString().trim();
+            final g = (t['pipeGrade'] ?? '').toString().trim();
+            final sch = (t['pipeSch'] ?? '').toString().trim();
+            specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
           }
           for (var spec in specMap.values) {
             final s = spec['size']!;
             final g = spec['grade']!;
             final sch = spec['sch']!;
             for (var coat in coatingOptions) {
-              double rec = 0, ret = 0, iss = 0;
-              for (var t in transactions) {
-                if (t['category'] == cat &&
-                    (t['pipeSize'] ?? '').toString().trim().toLowerCase() == s.toLowerCase() &&
-                    (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == g.toLowerCase() &&
-                    (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
-                    t['internalCoating'] == coat) {
-                  double q = (t['quantity'] as num).toDouble();
-                  if (t['type'] == 'RECEIVE') rec += q;
-                  if (t['type'] == 'RETURN') ret += q;
-                  if (t['type'] == 'ISSUE') iss += q;
-                }
-              }
-              double bal = (rec + ret) - iss;
-              if (rec > 0 || ret > 0 || iss > 0) {
-                html.writeln('<tr><td>$cat</td><td>$s</td><td>$g</td><td>$sch</td><td>$coat</td><td>$rec</td><td>$ret</td><td>$iss</td><td class="bal">$bal Qty</td></tr>');
+              double bal = _getPhysicalStock(s, g, sch, cat, coat);
+              String note = (cat == 'Painting Pipe' || cat == 'Painting Bend')
+                  ? '<span style="color:#0284c7;font-weight:bold;">Ready Painted in Yard</span>'
+                  : 'Physical Stock';
+              if (bal > 0) {
+                html.writeln('<tr><td><b>$cat</b></td><td>$s</td><td>$g</td><td>$sch</td><td>$coat</td><td class="bal">$bal Qty</td><td>$note</td></tr>');
               }
             }
           }
@@ -237,7 +295,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         content = html.toString();
       }
     } else {
-      // TRANSACTIONS LEDGER REPORT (EXCEL OR PDF)
       final list = customList ?? transactions;
       if (!isPdf) {
         final StringBuffer csv = StringBuffer();
@@ -333,7 +390,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     }
   }
 
-  // Dialog to choose Excel or PDF
   void _showExportChoiceDialog(String reportType, {List<Map<String, dynamic>>? customList}) {
     showDialog(
       context: context,
@@ -484,22 +540,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       },
     );
     return pinResult ?? false;
-  }
-
-  double _getStock(String size, String grade, String sch, String cat, String coating) {
-    double total = 0;
-    for (var t in transactions) {
-      if ((t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.trim().toLowerCase() &&
-          (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.trim().toLowerCase() &&
-          (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.trim().toLowerCase() &&
-          t['category'] == cat &&
-          t['internalCoating'] == coating) {
-        double qty = (t['quantity'] as num).toDouble();
-        if (t['type'] == 'RECEIVE' || t['type'] == 'RETURN') total += qty;
-        if (t['type'] == 'ISSUE') total -= qty;
-      }
-    }
-    return total;
   }
 
   void _deleteTransactionById(String id) async {
@@ -715,7 +755,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Current Available Pipe Stock (Rec + Ret - Iss)', style: TextStyle(color: Colors.grey)),
+                const Text('Current Total Available Physical Stock in Store', style: TextStyle(color: Colors.grey)),
                 Text('$balance Qty', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF1E3A8A))),
               ],
             ),
@@ -940,7 +980,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
     return StatefulBuilder(
       builder: (context, setSub) {
-        double currentStock = _getStock(sizeCtrl.text.trim(), gradeCtrl.text.trim(), schCtrl.text.trim(), cat, coat);
+        final totalAvail = _getTotalAvailableToIssue(sizeCtrl.text.trim(), gradeCtrl.text.trim(), schCtrl.text.trim(), cat, coat);
+        final readyInYard = _getPhysicalStock(sizeCtrl.text.trim(), gradeCtrl.text.trim(), schCtrl.text.trim(), cat, coat);
+        final isPainted = (cat == 'Painting Pipe' || cat == 'Painting Bend');
+
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
@@ -980,13 +1023,33 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: currentStock > 0 ? Colors.green.shade50 : Colors.red.shade50,
+                color: totalAvail > 0 ? Colors.green.shade50 : Colors.red.shade50,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: currentStock > 0 ? Colors.green : Colors.red),
+                border: Border.all(color: totalAvail > 0 ? Colors.green : Colors.red),
               ),
-              child: Text(
-                'Available Stock for this Spec: $currentStock Qty',
-                style: TextStyle(fontWeight: FontWeight.bold, color: currentStock > 0 ? Colors.green.shade800 : Colors.red.shade800),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (isPainted) ...[
+                    Text(
+                      'Ready Painted in Yard: $readyInYard Qty',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.teal),
+                    ),
+                    Text(
+                      'Total Available to Issue (Yard + Bare to paint): $totalAvail Qty',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: totalAvail > 0 ? Colors.green.shade800 : Colors.red.shade800),
+                    ),
+                    const Text(
+                      '* Pehle yard mein pada painted pipe use hoga, baaqi Bare stock se paint hoga.',
+                      style: TextStyle(fontSize: 11, color: Colors.black54),
+                    ),
+                  ] else ...[
+                    Text(
+                      'Available Stock in Yard: $totalAvail Qty',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: totalAvail > 0 ? Colors.green.shade800 : Colors.red.shade800),
+                    ),
+                  ],
+                ],
               ),
             ),
             const SizedBox(height: 8),
@@ -1025,12 +1088,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               onPressed: () async {
                 double req = double.tryParse(qtyCtrl.text) ?? 0;
                 if (req <= 0) return;
-                if (req > currentStock) {
+                if (req > totalAvail) {
                   showDialog(
                     context: context,
                     builder: (ctx) => AlertDialog(
                       title: const Text('Insufficient Stock Blocked', style: TextStyle(color: Colors.red)),
-                      content: Text('Cannot issue $req pipes. Only $currentStock available for Size: ${sizeCtrl.text}, Grade: ${gradeCtrl.text}, SCH: ${schCtrl.text}.'),
+                      content: Text('Cannot issue $req pipes. Only $totalAvail available for Size: ${sizeCtrl.text}, Grade: ${gradeCtrl.text}, SCH: ${schCtrl.text}.'),
                       actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
                     ),
                   );
@@ -1059,7 +1122,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 _saveData();
                 _syncWithCloud();
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authorized: Pipes Issued & Synced!')));
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Authorized: $cat Issued & Synced!')));
                   setState(() => _navIndex = 0);
                 }
               },
@@ -1078,7 +1141,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- 3. RETURN MODULE ---
+  // --- 3. RETURN MODULE (WAPSI S DIRECT PAINTED POOL MEIN) ---
   Widget _buildReturning() {
     final sizeCtrl = TextEditingController();
     final gradeCtrl = TextEditingController();
@@ -1103,7 +1166,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               ],
             ),
             const SizedBox(height: 6),
-            const Text('Returned pipes are automatically added back to stock.', style: TextStyle(color: Colors.grey, fontSize: 13)),
+            const Text('Site se wapis aane wale pipes usi category (e.g. Painting Pipe) ke ready stock mein add honge.', style: TextStyle(color: Colors.grey, fontSize: 13)),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1184,7 +1247,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 _saveData();
                 _syncWithCloud();
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Success: Returned Pipes Added & Synced!')));
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Success: Returned pipes added to $cat ready stock!')));
                   setState(() => _navIndex = 0);
                 }
               },
@@ -1237,87 +1300,74 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           child: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             children: categories.map((cat) {
+              final isPainted = (cat == 'Painting Pipe' || cat == 'Painting Bend');
+
               final specMap = <String, Map<String, String>>{};
               for (var t in transactions) {
-                if (t['category'] == cat) {
-                  final s = (t['pipeSize'] ?? '').toString().trim();
-                  final g = (t['pipeGrade'] ?? '').toString().trim();
-                  final sch = (t['pipeSch'] ?? '').toString().trim();
-                  final key = '$s|$g|$sch';
+                final s = (t['pipeSize'] ?? '').toString().trim();
+                final g = (t['pipeGrade'] ?? '').toString().trim();
+                final sch = (t['pipeSch'] ?? '').toString().trim();
+                final key = '$s|$g|$sch';
 
-                  if (_stockSearchQuery.isNotEmpty) {
-                    final match = s.toLowerCase().contains(_stockSearchQuery) ||
-                        g.toLowerCase().contains(_stockSearchQuery) ||
-                        sch.toLowerCase().contains(_stockSearchQuery);
-                    if (!match) continue;
-                  }
+                if (_stockSearchQuery.isNotEmpty) {
+                  final match = s.toLowerCase().contains(_stockSearchQuery) ||
+                      g.toLowerCase().contains(_stockSearchQuery) ||
+                      sch.toLowerCase().contains(_stockSearchQuery);
+                  if (!match) continue;
+                }
 
-                  if (!specMap.containsKey(key)) {
-                    specMap[key] = {'size': s, 'grade': g, 'sch': sch};
-                  }
+                if (!specMap.containsKey(key)) {
+                  specMap[key] = {'size': s, 'grade': g, 'sch': sch};
                 }
               }
 
-              double catTotal = 0;
-              for (var t in transactions) {
-                if (t['category'] == cat) {
-                  double q = (t['quantity'] as num).toDouble();
-                  if (t['type'] == 'RECEIVE' || t['type'] == 'RETURN') catTotal += q;
-                  if (t['type'] == 'ISSUE') catTotal -= q;
-                }
-              }
+              // Filter specs that have transactions related to this category or bare
+              final relevantSpecs = specMap.values.where((spec) {
+                final s = spec['size']!;
+                final g = spec['grade']!;
+                final sch = spec['sch']!;
+                double cBal = _getPhysicalStock(s, g, sch, cat, 'Internal Coated');
+                double uBal = _getPhysicalStock(s, g, sch, cat, 'Without Internal Coating');
+                return (cBal > 0 || uBal > 0);
+              }).toList();
 
               return Card(
                 margin: const EdgeInsets.only(bottom: 10),
                 elevation: 2,
                 child: ExpansionTile(
-                  initiallyExpanded: specMap.isNotEmpty,
-                  title: Text(cat, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1E3A8A))),
-                  trailing: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: catTotal > 0 ? Colors.green.shade50 : Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: catTotal > 0 ? Colors.green : Colors.grey),
-                    ),
-                    child: Text('Available: $catTotal', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: catTotal > 0 ? Colors.green.shade800 : Colors.grey.shade700)),
+                  initiallyExpanded: relevantSpecs.isNotEmpty,
+                  title: Row(
+                    children: [
+                      Text(cat, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1E3A8A))),
+                      if (isPainted) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(color: Colors.teal.shade50, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.teal)),
+                          child: const Text('Ready in Yard', style: TextStyle(fontSize: 10, color: Colors.teal, fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ],
                   ),
-                  children: specMap.isEmpty
-                      ? [const Padding(padding: EdgeInsets.all(16.0), child: Text('No pipes recorded under this category.', style: TextStyle(color: Colors.grey)))]
-                      : specMap.values.map((spec) {
+                  children: relevantSpecs.isEmpty
+                      ? [
+                          Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Text(
+                              isPainted
+                                  ? 'Abhi yard mein koi ready $cat nahi hai (Site se return aane par yahan show hoga).'
+                                  : 'No pipes in stock under this category.',
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                          )
+                        ]
+                      : relevantSpecs.map((spec) {
                           final size = spec['size']!;
                           final grade = spec['grade']!;
                           final sch = spec['sch']!;
 
-                          double cRec = 0, cRet = 0, cIss = 0;
-                          for (var t in transactions) {
-                            if (t['category'] == cat &&
-                                (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
-                                (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.toLowerCase() &&
-                                (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
-                                t['internalCoating'] == 'Internal Coated') {
-                              double q = (t['quantity'] as num).toDouble();
-                              if (t['type'] == 'RECEIVE') cRec += q;
-                              if (t['type'] == 'RETURN') cRet += q;
-                              if (t['type'] == 'ISSUE') cIss += q;
-                            }
-                          }
-                          double cBal = (cRec + cRet) - cIss;
-
-                          double uRec = 0, uRet = 0, uIss = 0;
-                          for (var t in transactions) {
-                            if (t['category'] == cat &&
-                                (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
-                                (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == grade.toLowerCase() &&
-                                (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
-                                t['internalCoating'] == 'Without Internal Coating') {
-                              double q = (t['quantity'] as num).toDouble();
-                              if (t['type'] == 'RECEIVE') uRec += q;
-                              if (t['type'] == 'RETURN') uRet += q;
-                              if (t['type'] == 'ISSUE') uIss += q;
-                            }
-                          }
-                          double uBal = (uRec + uRet) - uIss;
+                          double cBal = _getPhysicalStock(size, grade, sch, cat, 'Internal Coated');
+                          double uBal = _getPhysicalStock(size, grade, sch, cat, 'Without Internal Coating');
 
                           return Container(
                             margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1330,20 +1380,21 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
                                     Expanded(child: Text('Size: $size | Grade: $grade | SCH: $sch', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)))),
-                                    Text('Net: ${cBal + uBal}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
+                                    Text(
+                                      isPainted ? 'In Yard: ${cBal + uBal}' : 'Available: ${cBal + uBal}',
+                                      style: TextStyle(fontWeight: FontWeight.bold, color: isPainted ? Colors.teal : Colors.blueAccent),
+                                    ),
                                   ],
                                 ),
                                 const Divider(height: 14),
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Row(
+                                    const Row(
                                       children: [
-                                        const Icon(Icons.circle, size: 8, color: Colors.teal),
-                                        const SizedBox(width: 6),
-                                        const Text('Internal Coated:', style: TextStyle(fontWeight: FontWeight.w600)),
-                                        const SizedBox(width: 4),
-                                        Text('(Rec: $cRec | Ret: $cRet | Iss: $cIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                        Icon(Icons.circle, size: 8, color: Colors.teal),
+                                        SizedBox(width: 6),
+                                        Text('Internal Coated:', style: TextStyle(fontWeight: FontWeight.w600)),
                                       ],
                                     ),
                                     Text('$cBal Qty', style: TextStyle(fontWeight: FontWeight.bold, color: cBal > 0 ? Colors.green.shade800 : Colors.grey.shade600)),
@@ -1353,13 +1404,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Row(
+                                    const Row(
                                       children: [
-                                        const Icon(Icons.circle, size: 8, color: Colors.amber),
-                                        const SizedBox(width: 6),
-                                        const Text('Without Internal Coating:', style: TextStyle(fontWeight: FontWeight.w600)),
-                                        const SizedBox(width: 4),
-                                        Text('(Rec: $uRec | Ret: $uRet | Iss: $uIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                        Icon(Icons.circle, size: 8, color: Colors.amber),
+                                        SizedBox(width: 6),
+                                        Text('Without Internal Coating:', style: TextStyle(fontWeight: FontWeight.w600)),
                                       ],
                                     ),
                                     Text('$uBal Qty', style: TextStyle(fontWeight: FontWeight.bold, color: uBal > 0 ? Colors.green.shade800 : Colors.grey.shade600)),
@@ -1530,7 +1579,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // --- EXCEL & PDF REPORTS CARD ---
         const Text('Excel & Printable PDF Reports', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         Card(
@@ -1585,8 +1633,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ),
         ),
         const Divider(height: 28),
-
-        // --- CLOUD SYNC SETTINGS ---
         const Text('Internet Cloud Synchronization (Mobile & PC)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         Card(
