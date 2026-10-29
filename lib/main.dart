@@ -59,6 +59,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
   String _stockSearchQuery = '';
 
+  // History Search & Filter State
+  String _historySearchQuery = '';
+  String _historyTypeFilter = 'ALL'; // 'ALL', 'RECEIVE', 'ISSUE'
+
   @override
   void initState() {
     super.initState();
@@ -99,7 +103,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '2.4',
+        'version': '2.5',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
@@ -111,7 +115,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     } catch (_) {}
   }
 
-  // --- SECURITY PIN / PASSWORD DIALOG ---
+  // --- SECURITY PIN AUTHORIZATION ---
   Future<bool> _authenticateAction(String actionTitle) async {
     final pinResult = await showDialog<bool>(
       context: context,
@@ -190,7 +194,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return total;
   }
 
-  void _deleteTransaction(int index) async {
+  void _deleteTransactionById(String id) async {
     final authorized = await _authenticateAction('Delete Entry');
     if (!authorized) {
       if (mounted) {
@@ -211,7 +215,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
               setState(() {
-                transactions.removeAt(index);
+                transactions.removeWhere((item) => item['id'] == id);
               });
               _saveData();
               Navigator.pop(ctx);
@@ -226,7 +230,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  void _editTransaction(int index) async {
+  void _editTransactionById(String id) async {
+    final index = transactions.indexWhere((item) => item['id'] == id);
+    if (index == -1) return;
+
     final authorized = await _authenticateAction('Edit Entry');
     if (!authorized) {
       if (mounted) {
@@ -237,7 +244,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
     if (!mounted) return;
     final t = transactions[index];
-    final serialCtrl = TextEditingController(text: t['serial'] ?? '');
     final sizeCtrl = TextEditingController(text: t['pipeSize'] ?? '');
     final gradeCtrl = TextEditingController(text: t['pipeGrade'] ?? '');
     final schCtrl = TextEditingController(text: t['pipeSch'] ?? '');
@@ -246,6 +252,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     final remarksCtrl = TextEditingController(text: t['remarks'] ?? '');
     String cat = t['category'] ?? categories.first;
     String coat = t['internalCoating'] ?? coatingOptions.first;
+    DateTime editDate = DateTime.tryParse(t['date'] ?? '') ?? DateTime.now();
 
     showDialog(
       context: context,
@@ -256,7 +263,36 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(controller: serialCtrl, decoration: const InputDecoration(labelText: 'Serial No / ID')),
+                // Date Picker in Edit
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.blue.shade200),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Date: ${DateFormat('yyyy-MM-dd').format(editDate)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      IconButton(
+                        icon: const Icon(Icons.calendar_month, color: Color(0xFF1E3A8A)),
+                        onPressed: () async {
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: editDate,
+                            firstDate: DateTime(2000),
+                            lastDate: DateTime(2100),
+                          );
+                          if (picked != null) {
+                            setDState(() => editDate = picked);
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
                 TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size')),
                 TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade')),
                 TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH')),
@@ -273,7 +309,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   decoration: const InputDecoration(labelText: 'Coating'),
                 ),
                 TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity')),
-                TextField(controller: entityCtrl, decoration: InputDecoration(labelText: t['type'] == 'RECEIVE' ? 'Receiving Location' : 'Issued To')),
+                TextField(controller: entityCtrl, decoration: InputDecoration(labelText: t['type'] == 'RECEIVE' ? 'Receiving Location' : 'Issued To / Location')),
                 TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Remarks')),
               ],
             ),
@@ -285,7 +321,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 final newQty = double.tryParse(qtyCtrl.text) ?? 0;
                 if (newQty <= 0) return;
                 setState(() {
-                  transactions[index]['serial'] = serialCtrl.text.trim();
+                  transactions[index]['date'] = DateFormat('yyyy-MM-dd').format(editDate);
                   transactions[index]['pipeSize'] = sizeCtrl.text.trim();
                   transactions[index]['pipeGrade'] = gradeCtrl.text.trim();
                   transactions[index]['pipeSch'] = schCtrl.text.trim();
@@ -325,7 +361,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           NavigationDestination(icon: Icon(Icons.download), label: 'Receive'),
           NavigationDestination(icon: Icon(Icons.upload), label: 'Issue'),
           NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Stock'),
-          NavigationDestination(icon: Icon(Icons.history), label: 'History & Edit'),
+          NavigationDestination(icon: Icon(Icons.history), label: 'History & Search'),
           NavigationDestination(icon: Icon(Icons.settings), label: 'Manage & Security'),
         ],
       ),
@@ -424,8 +460,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // --- 1. RECEIVING MODULE (WITH AUTO-FILL & EDITABLE DATE, NO SERIAL) ---
   Widget _buildReceiving() {
-    final serialCtrl = TextEditingController();
     final sizeCtrl = TextEditingController();
     final gradeCtrl = TextEditingController();
     final schCtrl = TextEditingController();
@@ -434,6 +470,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     String cat = categories.first;
     String coat = coatingOptions.first;
     String rLoc = receivingLocations.isNotEmpty ? receivingLocations.first : 'Yard Receiving';
+    DateTime selectedDate = DateTime.now();
 
     return StatefulBuilder(
       builder: (context, setSub) {
@@ -442,7 +479,45 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           children: [
             const Text('Stock Receiving Module', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            TextField(controller: serialCtrl, decoration: const InputDecoration(labelText: 'Serial Number / Pipe ID *')),
+
+            // Auto-filled and Editable Date
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.shade200),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Receiving Date (Auto-filled)', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Text(DateFormat('yyyy-MM-dd').format(selectedDate), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
+                    icon: const Icon(Icons.calendar_month, color: Colors.white, size: 18),
+                    label: const Text('Change Date', style: TextStyle(color: Colors.white)),
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: selectedDate,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null) {
+                        setSub(() => selectedDate = picked);
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
             TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size (e.g., 24") *')),
             TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (e.g., X52, X65) *')),
             TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (e.g., 12.7, SCH 80) *')),
@@ -488,7 +563,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   transactions.add({
                     'id': const Uuid().v4(),
                     'type': 'RECEIVE',
-                    'serial': serialCtrl.text.trim(),
                     'pipeSize': sizeCtrl.text.trim(),
                     'pipeGrade': gradeCtrl.text.trim(),
                     'pipeSch': schCtrl.text.trim(),
@@ -496,7 +570,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     'internalCoating': coat,
                     'quantity': double.parse(qtyCtrl.text),
                     'entity': rLoc,
-                    'date': DateFormat('yyyy-MM-dd').format(DateTime.now()),
+                    'date': DateFormat('yyyy-MM-dd').format(selectedDate),
                     'remarks': remarksCtrl.text.trim(),
                   });
                 });
@@ -521,8 +595,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // --- 2. ISSUING MODULE (WITH AUTO-FILL & EDITABLE DATE, NO SERIAL) ---
   Widget _buildIssuing() {
-    final serialCtrl = TextEditingController();
     final sizeCtrl = TextEditingController();
     final gradeCtrl = TextEditingController();
     final schCtrl = TextEditingController();
@@ -532,6 +606,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     String coat = coatingOptions.first;
     String loc = issueLocations.isNotEmpty ? issueLocations.first : 'Yard 1';
     String jp = jpNames.isNotEmpty ? jpNames.first : 'JP-1';
+    DateTime selectedDate = DateTime.now();
 
     return StatefulBuilder(
       builder: (context, setSub) {
@@ -540,6 +615,45 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           padding: const EdgeInsets.all(16),
           children: [
             const Text('Stock Issuing Module', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+
+            // Auto-filled and Editable Date
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Issue Date (Auto-filled)', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Text(DateFormat('yyyy-MM-dd').format(selectedDate), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEA580C)),
+                    icon: const Icon(Icons.calendar_month, color: Colors.white, size: 18),
+                    label: const Text('Change Date', style: TextStyle(color: Colors.white)),
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: selectedDate,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null) {
+                        setSub(() => selectedDate = picked);
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.all(12),
@@ -554,7 +668,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            TextField(controller: serialCtrl, decoration: const InputDecoration(labelText: 'Serial Number / Pipe ID')),
             TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size *'), onChanged: (_) => setSub(() {})),
             TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (e.g. X52) *'), onChanged: (_) => setSub(() {})),
             TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (e.g. 12.7) *'), onChanged: (_) => setSub(() {})),
@@ -615,7 +728,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   transactions.add({
                     'id': const Uuid().v4(),
                     'type': 'ISSUE',
-                    'serial': serialCtrl.text.trim(),
                     'pipeSize': sizeCtrl.text.trim(),
                     'pipeGrade': gradeCtrl.text.trim(),
                     'pipeSch': schCtrl.text.trim(),
@@ -625,7 +737,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     'entity': personCtrl.text.trim(),
                     'location': loc,
                     'jpName': jp,
-                    'date': DateFormat('yyyy-MM-dd').format(DateTime.now()),
+                    'date': DateFormat('yyyy-MM-dd').format(selectedDate),
                   });
                 });
                 _saveData();
@@ -649,7 +761,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- DETAILED STOCK BREAKDOWN BY SIZE, GRADE, SCH & COATING ---
+  // --- 3. DETAILED STOCK BREAKDOWN BY SIZE, GRADE, SCH & COATING ---
   Widget _buildStock() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -854,54 +966,139 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // --- 4. ADVANCED SEARCH & FILTER HISTORY ---
   Widget _buildHistory() {
+    // Apply Type Filter and Universal Search
+    final filtered = transactions.where((t) {
+      // 1. Type Filter
+      if (_historyTypeFilter == 'RECEIVE' && t['type'] != 'RECEIVE') return false;
+      if (_historyTypeFilter == 'ISSUE' && t['type'] != 'ISSUE') return false;
+
+      // 2. Universal Search Query
+      if (_historySearchQuery.isNotEmpty) {
+        final q = _historySearchQuery;
+        final locMatch = (t['entity'] ?? '').toString().toLowerCase().contains(q) ||
+            (t['location'] ?? '').toString().toLowerCase().contains(q) ||
+            (t['jpName'] ?? '').toString().toLowerCase().contains(q);
+        final gradeMatch = (t['pipeGrade'] ?? '').toString().toLowerCase().contains(q);
+        final sizeMatch = (t['pipeSize'] ?? '').toString().toLowerCase().contains(q);
+        final schMatch = (t['pipeSch'] ?? '').toString().toLowerCase().contains(q);
+        final catMatch = (t['category'] ?? '').toString().toLowerCase().contains(q);
+        final dateMatch = (t['date'] ?? '').toString().toLowerCase().contains(q);
+        final remarksMatch = (t['remarks'] ?? '').toString().toLowerCase().contains(q);
+
+        return locMatch || gradeMatch || sizeMatch || schMatch || catMatch || dateMatch || remarksMatch;
+      }
+      return true;
+    }).toList();
+
     return Column(
       children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          color: Colors.blue.shade50,
+        // Search Bar in History
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+          child: TextField(
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.search),
+              hintText: 'Search Location, Grade, Size, SCH, Date...',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+              suffixIcon: _historySearchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () => setState(() => _historySearchQuery = ''),
+                    )
+                  : null,
+            ),
+            onChanged: (val) {
+              setState(() {
+                _historySearchQuery = val.trim().toLowerCase();
+              });
+            },
+          ),
+        ),
+
+        // Type Filter Buttons (Both / Receiving / Issuing)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
           child: Row(
             children: [
-              const Icon(Icons.security, color: Color(0xFF1E3A8A)),
-              const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  'Total Entries: ${transactions.length}\nEditing aur Deletion Security Lock se protected hain.',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
+                child: FilterChip(
+                  label: const Text('Both (All)'),
+                  selected: _historyTypeFilter == 'ALL',
+                  selectedColor: Colors.blue.shade100,
+                  onSelected: (_) => setState(() => _historyTypeFilter = 'ALL'),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: FilterChip(
+                  label: const Text('Receiving'),
+                  selected: _historyTypeFilter == 'RECEIVE',
+                  selectedColor: Colors.green.shade100,
+                  onSelected: (_) => setState(() => _historyTypeFilter = 'RECEIVE'),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: FilterChip(
+                  label: const Text('Issuing'),
+                  selected: _historyTypeFilter == 'ISSUE',
+                  selectedColor: Colors.orange.shade100,
+                  onSelected: (_) => setState(() => _historyTypeFilter = 'ISSUE'),
                 ),
               ),
             ],
           ),
         ),
+
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          color: Colors.blue.shade50,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Showing ${filtered.length} of ${transactions.length} entries',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              const Text('PIN Protected', style: TextStyle(color: Colors.grey, fontSize: 12)),
+            ],
+          ),
+        ),
+
         Expanded(
-          child: transactions.isEmpty
-              ? const Center(child: Text('No transactions yet.'))
+          child: filtered.isEmpty
+              ? const Center(child: Text('No matching records found.'))
               : ListView.builder(
-                  itemCount: transactions.length,
+                  itemCount: filtered.length,
                   itemBuilder: (context, index) {
-                    final t = transactions[index];
+                    final t = filtered[index];
                     final isReceive = t['type'] == 'RECEIVE';
+                    final tId = t['id'];
+
                     return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                       child: ListTile(
                         leading: CircleAvatar(
                           backgroundColor: isReceive ? Colors.green.shade100 : Colors.orange.shade100,
                           child: Icon(isReceive ? Icons.download : Icons.upload, color: isReceive ? Colors.green : Colors.orange),
                         ),
                         title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}'),
-                        subtitle: Text('Grade: ${t['pipeGrade']} | SCH: ${t['pipeSch']}\nQty: ${t['quantity']} | Date: ${t['date']}'),
+                        subtitle: Text('Grade: ${t['pipeGrade']} | SCH: ${t['pipeSch']}\nQty: ${t['quantity']} | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}${t['jpName'] != null ? ' | JP: ${t['jpName']}' : ''}'),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
                               icon: const Icon(Icons.edit, color: Colors.blue),
-                              tooltip: 'Edit Entry (Locked)',
-                              onPressed: () => _editTransaction(index),
+                              tooltip: 'Edit Entry',
+                              onPressed: () => _editTransactionById(tId),
                             ),
                             IconButton(
                               icon: const Icon(Icons.delete, color: Colors.red),
-                              tooltip: 'Delete Entry (Locked)',
-                              onPressed: () => _deleteTransaction(index),
+                              tooltip: 'Delete Entry',
+                              onPressed: () => _deleteTransactionById(tId),
                             ),
                           ],
                         ),
@@ -937,7 +1134,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   children: [
                     Icon(Icons.lock, color: Color(0xFF1E3A8A), size: 28),
                     SizedBox(width: 8),
-                    Text('Master PIN / Password Authorization', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text('Master PIN Authorization', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   ],
                 ),
                 const SizedBox(height: 6),
