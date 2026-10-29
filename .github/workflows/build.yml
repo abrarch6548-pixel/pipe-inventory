@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 1. Android APK Build
+  # 1. Android APK Build (With Internet Permission)
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
@@ -30,6 +30,10 @@ jobs:
           flutter create --project-name pipe_inventory --platforms=android,windows --org com.pipestore .
           if [ -f /tmp/backup/main.dart ]; then cp /tmp/backup/main.dart lib/main.dart; fi
           flutter pub add intl uuid path_provider http
+
+          # ADD FULL INTERNET PERMISSIONS TO ANDROID MANIFEST
+          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
+
           flutter build apk --release
 
       - name: Upload Android APK
