@@ -45,7 +45,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   List<String> issueLocations = ['Yard 1', 'Yard 2', 'Warehouse A', 'Main Site Line'];
   List<String> jpNames = ['JP-Alpha', 'JP-Beta', 'JP-North', 'JP-Pipeline-01'];
 
-  // Master Security PIN (Default: 1234)
   String _securityPin = '1234';
 
   final List<String> categories = [
@@ -58,10 +57,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   ];
 
   String _stockSearchQuery = '';
-
-  // History Search & Filter State
   String _historySearchQuery = '';
-  String _historyTypeFilter = 'ALL'; // 'ALL', 'RECEIVE', 'ISSUE'
+  String _historyTypeFilter = 'ALL'; // ALL, RECEIVE, ISSUE, RETURN
 
   @override
   void initState() {
@@ -103,7 +100,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '2.5',
+        'version': '2.7',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
@@ -115,7 +112,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     } catch (_) {}
   }
 
-  // --- SECURITY PIN AUTHORIZATION ---
   Future<bool> _authenticateAction(String actionTitle) async {
     final pinResult = await showDialog<bool>(
       context: context,
@@ -143,7 +139,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   keyboardType: TextInputType.number,
                   autofocus: true,
                   decoration: InputDecoration(
-                    labelText: 'Master Security PIN (Default: 1234)',
+                    labelText: 'Master PIN (Default: 1234)',
                     errorText: errorMsg.isNotEmpty ? errorMsg : null,
                     border: const OutlineInputBorder(),
                     prefixIcon: const Icon(Icons.pin),
@@ -152,19 +148,14 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               ],
             ),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel'),
-              ),
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
                 onPressed: () {
                   if (pinCtrl.text.trim() == _securityPin.trim()) {
                     Navigator.pop(ctx, true);
                   } else {
-                    setDState(() {
-                      errorMsg = 'Incorrect PIN! Try again.';
-                    });
+                    setDState(() => errorMsg = 'Incorrect PIN!');
                   }
                 },
                 child: const Text('Authorize', style: TextStyle(color: Colors.white)),
@@ -174,10 +165,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         );
       },
     );
-
     return pinResult ?? false;
   }
 
+  // Stock Balance: (RECEIVE + RETURN) - ISSUE
   double _getStock(String size, String grade, String sch, String cat, String coating) {
     double total = 0;
     for (var t in transactions) {
@@ -187,7 +178,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           t['category'] == cat &&
           t['internalCoating'] == coating) {
         double qty = (t['quantity'] as num).toDouble();
-        if (t['type'] == 'RECEIVE') total += qty;
+        if (t['type'] == 'RECEIVE' || t['type'] == 'RETURN') total += qty;
         if (t['type'] == 'ISSUE') total -= qty;
       }
     }
@@ -196,19 +187,14 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
   void _deleteTransactionById(String id) async {
     final authorized = await _authenticateAction('Delete Entry');
-    if (!authorized) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
-      }
-      return;
-    }
+    if (!authorized) return;
 
     if (!mounted) return;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Entry Confirmation', style: TextStyle(color: Colors.red)),
-        content: const Text('Are you sure you want to permanently delete this inventory entry? Stock balance will update automatically.'),
+        content: const Text('Are you sure you want to delete this entry? Stock balance will update automatically.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
@@ -219,9 +205,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               });
               _saveData();
               Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Entry deleted and stock balance updated!')),
-              );
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry deleted & stock balance recalculated!')));
             },
             child: const Text('DELETE', style: TextStyle(color: Colors.white)),
           ),
@@ -235,12 +219,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     if (index == -1) return;
 
     final authorized = await _authenticateAction('Edit Entry');
-    if (!authorized) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
-      }
-      return;
-    }
+    if (!authorized) return;
 
     if (!mounted) return;
     final t = transactions[index];
@@ -263,14 +242,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Date Picker in Edit
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.blue.shade200),
-                  ),
+                  decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.blue.shade200)),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -284,9 +258,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                             firstDate: DateTime(2000),
                             lastDate: DateTime(2100),
                           );
-                          if (picked != null) {
-                            setDState(() => editDate = picked);
-                          }
+                          if (picked != null) setDState(() => editDate = picked);
                         },
                       ),
                     ],
@@ -309,8 +281,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   decoration: const InputDecoration(labelText: 'Coating'),
                 ),
                 TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity')),
-                TextField(controller: entityCtrl, decoration: InputDecoration(labelText: t['type'] == 'RECEIVE' ? 'Receiving Location' : 'Issued To / Location')),
-                TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Remarks')),
+                TextField(controller: entityCtrl, decoration: InputDecoration(labelText: t['type'] == 'RECEIVE' ? 'Receiving Location' : (t['type'] == 'RETURN' ? 'Returned From' : 'Issued To'))),
+                TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Remarks / Reason')),
               ],
             ),
           ),
@@ -333,9 +305,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 });
                 _saveData();
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Entry successfully updated & stock recalculated!')),
-                );
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry updated & stock balance recalculated!')));
               },
               child: const Text('Save Changes'),
             ),
@@ -360,9 +330,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           NavigationDestination(icon: Icon(Icons.dashboard), label: 'Dashboard'),
           NavigationDestination(icon: Icon(Icons.download), label: 'Receive'),
           NavigationDestination(icon: Icon(Icons.upload), label: 'Issue'),
+          NavigationDestination(icon: Icon(Icons.assignment_return), label: 'Return'),
           NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Stock'),
-          NavigationDestination(icon: Icon(Icons.history), label: 'History & Search'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Manage & Security'),
+          NavigationDestination(icon: Icon(Icons.history), label: 'History'),
+          NavigationDestination(icon: Icon(Icons.settings), label: 'Manage'),
         ],
       ),
     );
@@ -372,20 +343,25 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     if (_navIndex == 0) return _buildDashboard();
     if (_navIndex == 1) return _buildReceiving();
     if (_navIndex == 2) return _buildIssuing();
-    if (_navIndex == 3) return _buildStock();
-    if (_navIndex == 4) return _buildHistory();
+    if (_navIndex == 3) return _buildReturning();
+    if (_navIndex == 4) return _buildStock();
+    if (_navIndex == 5) return _buildHistory();
     return _buildManageAndBackup();
   }
 
+  // --- DASHBOARD ---
   Widget _buildDashboard() {
     double received = 0;
     double issued = 0;
+    double returned = 0;
+
     for (var t in transactions) {
       double q = (t['quantity'] as num).toDouble();
       if (t['type'] == 'RECEIVE') received += q;
       if (t['type'] == 'ISSUE') issued += q;
+      if (t['type'] == 'RETURN') returned += q;
     }
-    double balance = received - issued;
+    double balance = (received + returned) - issued;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -399,7 +375,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Current Total Pipe Stock', style: TextStyle(color: Colors.grey)),
+                const Text('Current Total Available Stock (Rec + Ret - Iss)', style: TextStyle(color: Colors.grey)),
                 Text('$balance Qty', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF1E3A8A))),
               ],
             ),
@@ -412,12 +388,27 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               child: Card(
                 color: Colors.green.shade50,
                 child: Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Total Received', style: TextStyle(color: Colors.grey)),
-                      Text('$received', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.green)),
+                      const Text('Total Received', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      Text('$received', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Card(
+                color: Colors.teal.shade50,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Total Returned', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      Text('$returned', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal)),
                     ],
                   ),
                 ),
@@ -427,12 +418,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               child: Card(
                 color: Colors.orange.shade50,
                 child: Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Total Issued', style: TextStyle(color: Colors.grey)),
-                      Text('$issued', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.orange)),
+                      const Text('Total Issued', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      Text('$issued', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.orange)),
                     ],
                   ),
                 ),
@@ -441,26 +432,38 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ],
         ),
         const SizedBox(height: 16),
-        const Text('Quick Recent Actions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-        ...transactions.reversed.take(4).map((t) => Card(
-          child: ListTile(
-            leading: Icon(
-              t['type'] == 'RECEIVE' ? Icons.arrow_downward : Icons.arrow_upward,
-              color: t['type'] == 'RECEIVE' ? Colors.green : Colors.orange,
+        const Text('Recent Activities', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        ...transactions.reversed.take(5).map((t) {
+          IconData icon;
+          Color color;
+          if (t['type'] == 'RECEIVE') {
+            icon = Icons.arrow_downward;
+            color = Colors.green;
+          } else if (t['type'] == 'RETURN') {
+            icon = Icons.assignment_return;
+            color = Colors.teal;
+          } else {
+            icon = Icons.arrow_upward;
+            color = Colors.orange;
+          }
+
+          return Card(
+            child: ListTile(
+              leading: Icon(icon, color: color),
+              title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}'),
+              subtitle: Text('Grade: ${t['pipeGrade']} | SCH: ${t['pipeSch']}\nQty: ${t['quantity']} | Date: ${t['date']}'),
+              trailing: Chip(
+                label: Text(t['type'], style: const TextStyle(color: Colors.white, fontSize: 11)),
+                backgroundColor: color,
+              ),
             ),
-            title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}'),
-            subtitle: Text('Grade: ${t['pipeGrade']} | SCH: ${t['pipeSch']}\nQty: ${t['quantity']} | Date: ${t['date']}'),
-            trailing: Chip(
-              label: Text(t['type'], style: const TextStyle(color: Colors.white, fontSize: 11)),
-              backgroundColor: t['type'] == 'RECEIVE' ? Colors.green : Colors.orange,
-            ),
-          ),
-        )),
+          );
+        }),
       ],
     );
   }
 
-  // --- 1. RECEIVING MODULE (WITH AUTO-FILL & EDITABLE DATE, NO SERIAL) ---
+  // --- 1. RECEIVING MODULE ---
   Widget _buildReceiving() {
     final sizeCtrl = TextEditingController();
     final gradeCtrl = TextEditingController();
@@ -479,15 +482,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           children: [
             const Text('Stock Receiving Module', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-
-            // Auto-filled and Editable Date
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.blue.shade200),
-              ),
+              decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.blue.shade200)),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -509,9 +506,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                         firstDate: DateTime(2000),
                         lastDate: DateTime(2100),
                       );
-                      if (picked != null) {
-                        setSub(() => selectedDate = picked);
-                      }
+                      if (picked != null) setSub(() => selectedDate = picked);
                     },
                   ),
                 ],
@@ -550,14 +545,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   return;
                 }
 
-                // Security PIN Authorization
                 final authorized = await _authenticateAction('Add Receiving Entry');
-                if (!authorized) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
-                  }
-                  return;
-                }
+                if (!authorized) return;
 
                 setState(() {
                   transactions.add({
@@ -595,7 +584,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- 2. ISSUING MODULE (WITH AUTO-FILL & EDITABLE DATE, NO SERIAL) ---
+  // --- 2. ISSUING MODULE ---
   Widget _buildIssuing() {
     final sizeCtrl = TextEditingController();
     final gradeCtrl = TextEditingController();
@@ -616,15 +605,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           children: [
             const Text('Stock Issuing Module', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-
-            // Auto-filled and Editable Date
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.orange.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.orange.shade200),
-              ),
+              decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.orange.shade200)),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -646,9 +629,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                         firstDate: DateTime(2000),
                         lastDate: DateTime(2100),
                       );
-                      if (picked != null) {
-                        setSub(() => selectedDate = picked);
-                      }
+                      if (picked != null) setSub(() => selectedDate = picked);
                     },
                   ),
                 ],
@@ -715,14 +696,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   return;
                 }
 
-                // Security PIN Authorization
                 final authorized = await _authenticateAction('Issue Pipe Stock');
-                if (!authorized) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
-                  }
-                  return;
-                }
+                if (!authorized) return;
 
                 setState(() {
                   transactions.add({
@@ -761,7 +736,131 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- 3. DETAILED STOCK BREAKDOWN BY SIZE, GRADE, SCH & COATING ---
+  // --- 3. RETURN MODULE (NEW: WAPSI STOCK MEIN JAMA) ---
+  Widget _buildReturning() {
+    final sizeCtrl = TextEditingController();
+    final gradeCtrl = TextEditingController();
+    final schCtrl = TextEditingController();
+    final qtyCtrl = TextEditingController();
+    final returnFromCtrl = TextEditingController();
+    final remarksCtrl = TextEditingController();
+    String cat = categories.first;
+    String coat = coatingOptions.first;
+    DateTime selectedDate = DateTime.now();
+
+    return StatefulBuilder(
+      builder: (context, setSub) {
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.assignment_return, color: Colors.teal, size: 26),
+                SizedBox(width: 8),
+                Text('Stock Return (Pipe Wapsi)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.teal)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text('Issued pipes jo site ya project se wapis aayein, wo yahan enter karein. Ye khud-ba-khud usi category aur spec ke stock mein add ho jayenge.', style: TextStyle(color: Colors.grey, fontSize: 13)),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(color: Colors.teal.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.teal.shade200)),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Return Date (Auto-filled)', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Text(DateFormat('yyyy-MM-dd').format(selectedDate), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
+                    icon: const Icon(Icons.calendar_month, color: Colors.white, size: 18),
+                    label: const Text('Change Date', style: TextStyle(color: Colors.white)),
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: selectedDate,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null) setSub(() => selectedDate = picked);
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size (e.g. 24") *')),
+            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (e.g. X52) *')),
+            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (e.g. 12.7) *')),
+            DropdownButtonFormField<String>(
+              value: cat,
+              items: categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+              onChanged: (v) => setSub(() => cat = v!),
+              decoration: const InputDecoration(labelText: 'Category *'),
+            ),
+            DropdownButtonFormField<String>(
+              value: coat,
+              items: coatingOptions.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+              onChanged: (v) => setSub(() => coat = v!),
+              decoration: const InputDecoration(labelText: 'Internal Coating *'),
+            ),
+            TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity Returned to Store *')),
+            TextField(controller: returnFromCtrl, decoration: const InputDecoration(labelText: 'Returned From (Site / Person / Location) *')),
+            TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Reason for Return (Surplus / Cut Piece / Complete)')),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 14)),
+              onPressed: () async {
+                if (qtyCtrl.text.isEmpty || sizeCtrl.text.isEmpty || gradeCtrl.text.isEmpty || schCtrl.text.isEmpty || returnFromCtrl.text.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill all mandatory fields!')));
+                  return;
+                }
+
+                final authorized = await _authenticateAction('Add Return Entry');
+                if (!authorized) return;
+
+                setState(() {
+                  transactions.add({
+                    'id': const Uuid().v4(),
+                    'type': 'RETURN',
+                    'pipeSize': sizeCtrl.text.trim(),
+                    'pipeGrade': gradeCtrl.text.trim(),
+                    'pipeSch': schCtrl.text.trim(),
+                    'category': cat,
+                    'internalCoating': coat,
+                    'quantity': double.parse(qtyCtrl.text),
+                    'entity': returnFromCtrl.text.trim(),
+                    'date': DateFormat('yyyy-MM-dd').format(selectedDate),
+                    'remarks': remarksCtrl.text.trim(),
+                  });
+                });
+                _saveData();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Success: Returned Pipes Added Back to Stock!')));
+                  setState(() => _navIndex = 0);
+                }
+              },
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.lock, color: Colors.white, size: 20),
+                  SizedBox(width: 8),
+                  Text('AUTHORIZE & ADD RETURN TO STOCK', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // --- 4. DETAILED STOCK BREAKDOWN ---
   Widget _buildStock() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -811,7 +910,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               for (var t in transactions) {
                 if (t['category'] == cat) {
                   double q = (t['quantity'] as num).toDouble();
-                  if (t['type'] == 'RECEIVE') catTotal += q;
+                  if (t['type'] == 'RECEIVE' || t['type'] == 'RETURN') catTotal += q;
                   if (t['type'] == 'ISSUE') catTotal -= q;
                 }
               }
@@ -821,10 +920,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 elevation: 2,
                 child: ExpansionTile(
                   initiallyExpanded: specMap.isNotEmpty,
-                  title: Text(
-                    cat,
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1E3A8A)),
-                  ),
+                  title: Text(cat, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1E3A8A))),
                   trailing: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
@@ -832,29 +928,17 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: catTotal > 0 ? Colors.green : Colors.grey),
                     ),
-                    child: Text(
-                      'Total: $catTotal',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                        color: catTotal > 0 ? Colors.green.shade800 : Colors.grey.shade700,
-                      ),
-                    ),
+                    child: Text('Available: $catTotal', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: catTotal > 0 ? Colors.green.shade800 : Colors.grey.shade700)),
                   ),
                   children: specMap.isEmpty
-                      ? [
-                          const Padding(
-                            padding: EdgeInsets.all(16.0),
-                            child: Text('No pipes recorded under this category.', style: TextStyle(color: Colors.grey)),
-                          )
-                        ]
+                      ? [const Padding(padding: EdgeInsets.all(16.0), child: Text('No pipes recorded under this category.', style: TextStyle(color: Colors.grey)))]
                       : specMap.values.map((spec) {
                           final size = spec['size']!;
                           final grade = spec['grade']!;
                           final sch = spec['sch']!;
 
-                          double coatedRec = 0;
-                          double coatedIss = 0;
+                          // Internal Coated
+                          double cRec = 0, cRet = 0, cIss = 0;
                           for (var t in transactions) {
                             if (t['category'] == cat &&
                                 (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
@@ -862,14 +946,15 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                                 (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
                                 t['internalCoating'] == 'Internal Coated') {
                               double q = (t['quantity'] as num).toDouble();
-                              if (t['type'] == 'RECEIVE') coatedRec += q;
-                              if (t['type'] == 'ISSUE') coatedIss += q;
+                              if (t['type'] == 'RECEIVE') cRec += q;
+                              if (t['type'] == 'RETURN') cRet += q;
+                              if (t['type'] == 'ISSUE') cIss += q;
                             }
                           }
-                          double coatedBal = coatedRec - coatedIss;
+                          double cBal = (cRec + cRet) - cIss;
 
-                          double unCoatedRec = 0;
-                          double unCoatedIss = 0;
+                          // Without Internal Coating
+                          double uRec = 0, uRet = 0, uIss = 0;
                           for (var t in transactions) {
                             if (t['category'] == cat &&
                                 (t['pipeSize'] ?? '').toString().trim().toLowerCase() == size.toLowerCase() &&
@@ -877,36 +962,25 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                                 (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
                                 t['internalCoating'] == 'Without Internal Coating') {
                               double q = (t['quantity'] as num).toDouble();
-                              if (t['type'] == 'RECEIVE') unCoatedRec += q;
-                              if (t['type'] == 'ISSUE') unCoatedIss += q;
+                              if (t['type'] == 'RECEIVE') uRec += q;
+                              if (t['type'] == 'RETURN') uRet += q;
+                              if (t['type'] == 'ISSUE') uIss += q;
                             }
                           }
-                          double unCoatedBal = unCoatedRec - unCoatedIss;
+                          double uBal = (uRec + uRet) - uIss;
 
                           return Container(
                             margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                             padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade50,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.blueGrey.shade100),
-                            ),
+                            decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.blueGrey.shade100)),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Expanded(
-                                      child: Text(
-                                        'Size: $size | Grade: $grade | SCH: $sch',
-                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
-                                      ),
-                                    ),
-                                    Text(
-                                      'Net: ${coatedBal + unCoatedBal}',
-                                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
-                                    ),
+                                    Expanded(child: Text('Size: $size | Grade: $grade | SCH: $sch', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)))),
+                                    Text('Net: ${cBal + uBal}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
                                   ],
                                 ),
                                 const Divider(height: 14),
@@ -919,16 +993,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                                         const SizedBox(width: 6),
                                         const Text('Internal Coated:', style: TextStyle(fontWeight: FontWeight.w600)),
                                         const SizedBox(width: 4),
-                                        Text('(Rec: $coatedRec | Iss: $coatedIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                        Text('(Rec: $cRec | Ret: $cRet | Iss: $cIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
                                       ],
                                     ),
-                                    Text(
-                                      '$coatedBal Qty',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: coatedBal > 0 ? Colors.green.shade800 : Colors.grey.shade600,
-                                      ),
-                                    ),
+                                    Text('$cBal Qty', style: TextStyle(fontWeight: FontWeight.bold, color: cBal > 0 ? Colors.green.shade800 : Colors.grey.shade600)),
                                   ],
                                 ),
                                 const SizedBox(height: 6),
@@ -941,16 +1009,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                                         const SizedBox(width: 6),
                                         const Text('Without Internal Coating:', style: TextStyle(fontWeight: FontWeight.w600)),
                                         const SizedBox(width: 4),
-                                        Text('(Rec: $unCoatedRec | Iss: $unCoatedIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                        Text('(Rec: $uRec | Ret: $uRet | Iss: $uIss)', style: const TextStyle(fontSize: 11, color: Colors.grey)),
                                       ],
                                     ),
-                                    Text(
-                                      '$unCoatedBal Qty',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: unCoatedBal > 0 ? Colors.green.shade800 : Colors.grey.shade600,
-                                      ),
-                                    ),
+                                    Text('$uBal Qty', style: TextStyle(fontWeight: FontWeight.bold, color: uBal > 0 ? Colors.green.shade800 : Colors.grey.shade600)),
                                   ],
                                 ),
                               ],
@@ -966,15 +1028,13 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- 4. ADVANCED SEARCH & FILTER HISTORY ---
+  // --- 5. HISTORY & SEARCH ---
   Widget _buildHistory() {
-    // Apply Type Filter and Universal Search
     final filtered = transactions.where((t) {
-      // 1. Type Filter
       if (_historyTypeFilter == 'RECEIVE' && t['type'] != 'RECEIVE') return false;
       if (_historyTypeFilter == 'ISSUE' && t['type'] != 'ISSUE') return false;
+      if (_historyTypeFilter == 'RETURN' && t['type'] != 'RETURN') return false;
 
-      // 2. Universal Search Query
       if (_historySearchQuery.isNotEmpty) {
         final q = _historySearchQuery;
         final locMatch = (t['entity'] ?? '').toString().toLowerCase().contains(q) ||
@@ -994,7 +1054,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
     return Column(
       children: [
-        // Search Bar in History
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
           child: TextField(
@@ -1004,70 +1063,60 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
               contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
               suffixIcon: _historySearchQuery.isNotEmpty
-                  ? IconButton(
-                      icon: const Icon(Icons.clear),
-                      onPressed: () => setState(() => _historySearchQuery = ''),
-                    )
+                  ? IconButton(icon: const Icon(Icons.clear), onPressed: () => setState(() => _historySearchQuery = ''))
                   : null,
             ),
-            onChanged: (val) {
-              setState(() {
-                _historySearchQuery = val.trim().toLowerCase();
-              });
-            },
+            onChanged: (val) => setState(() => _historySearchQuery = val.trim().toLowerCase()),
           ),
         ),
-
-        // Type Filter Buttons (Both / Receiving / Issuing)
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          child: Row(
-            children: [
-              Expanded(
-                child: FilterChip(
-                  label: const Text('Both (All)'),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                FilterChip(
+                  label: const Text('All (Both)'),
                   selected: _historyTypeFilter == 'ALL',
                   selectedColor: Colors.blue.shade100,
                   onSelected: (_) => setState(() => _historyTypeFilter = 'ALL'),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: FilterChip(
+                const SizedBox(width: 6),
+                FilterChip(
                   label: const Text('Receiving'),
                   selected: _historyTypeFilter == 'RECEIVE',
                   selectedColor: Colors.green.shade100,
                   onSelected: (_) => setState(() => _historyTypeFilter = 'RECEIVE'),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: FilterChip(
+                const SizedBox(width: 6),
+                FilterChip(
                   label: const Text('Issuing'),
                   selected: _historyTypeFilter == 'ISSUE',
                   selectedColor: Colors.orange.shade100,
                   onSelected: (_) => setState(() => _historyTypeFilter = 'ISSUE'),
                 ),
-              ),
-            ],
+                const SizedBox(width: 6),
+                FilterChip(
+                  label: const Text('Returns (Wapsi)'),
+                  selected: _historyTypeFilter == 'RETURN',
+                  selectedColor: Colors.teal.shade100,
+                  onSelected: (_) => setState(() => _historyTypeFilter = 'RETURN'),
+                ),
+              ],
+            ),
           ),
         ),
-
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           color: Colors.blue.shade50,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'Showing ${filtered.length} of ${transactions.length} entries',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-              ),
+              Text('Showing ${filtered.length} of ${transactions.length} entries', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               const Text('PIN Protected', style: TextStyle(color: Colors.grey, fontSize: 12)),
             ],
           ),
         ),
-
         Expanded(
           child: filtered.isEmpty
               ? const Center(child: Text('No matching records found.'))
@@ -1075,31 +1124,35 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
                     final t = filtered[index];
-                    final isReceive = t['type'] == 'RECEIVE';
                     final tId = t['id'];
+
+                    IconData icon;
+                    Color color;
+                    if (t['type'] == 'RECEIVE') {
+                      icon = Icons.download;
+                      color = Colors.green;
+                    } else if (t['type'] == 'RETURN') {
+                      icon = Icons.assignment_return;
+                      color = Colors.teal;
+                    } else {
+                      icon = Icons.upload;
+                      color = Colors.orange;
+                    }
 
                     return Card(
                       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                       child: ListTile(
                         leading: CircleAvatar(
-                          backgroundColor: isReceive ? Colors.green.shade100 : Colors.orange.shade100,
-                          child: Icon(isReceive ? Icons.download : Icons.upload, color: isReceive ? Colors.green : Colors.orange),
+                          backgroundColor: color.withOpacity(0.15),
+                          child: Icon(icon, color: color),
                         ),
                         title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}'),
                         subtitle: Text('Grade: ${t['pipeGrade']} | SCH: ${t['pipeSch']}\nQty: ${t['quantity']} | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}${t['jpName'] != null ? ' | JP: ${t['jpName']}' : ''}'),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            IconButton(
-                              icon: const Icon(Icons.edit, color: Colors.blue),
-                              tooltip: 'Edit Entry',
-                              onPressed: () => _editTransactionById(tId),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.delete, color: Colors.red),
-                              tooltip: 'Delete Entry',
-                              onPressed: () => _deleteTransactionById(tId),
-                            ),
+                            IconButton(icon: const Icon(Icons.edit, color: Colors.blue), tooltip: 'Edit', onPressed: () => _editTransactionById(tId)),
+                            IconButton(icon: const Icon(Icons.delete, color: Colors.red), tooltip: 'Delete', onPressed: () => _deleteTransactionById(tId)),
                           ],
                         ),
                       ),
@@ -1111,6 +1164,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // --- 6. MANAGE & BACKUP ---
   Widget _buildManageAndBackup() {
     final rLocCtrl = TextEditingController();
     final iLocCtrl = TextEditingController();
@@ -1120,7 +1174,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // --- MASTER SECURITY SETTINGS ---
         const Text('Security & Access Protection', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Card(
@@ -1138,7 +1191,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   ],
                 ),
                 const SizedBox(height: 6),
-                const Text('New Entry, Edit, aur Delete sab security lock se protected hain.'),
+                const Text('New Entry, Return, Edit, aur Delete sab security lock se protected hain.'),
                 const SizedBox(height: 10),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1161,23 +1214,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                               content: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  TextField(
-                                    controller: oldPinCtrl,
-                                    obscureText: true,
-                                    keyboardType: TextInputType.number,
-                                    decoration: const InputDecoration(labelText: 'Current PIN'),
-                                  ),
+                                  TextField(controller: oldPinCtrl, obscureText: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Current PIN')),
                                   const SizedBox(height: 8),
-                                  TextField(
-                                    controller: newPinCtrl,
-                                    obscureText: true,
-                                    keyboardType: TextInputType.number,
-                                    decoration: const InputDecoration(labelText: 'New PIN (e.g. 4 digits)'),
-                                  ),
-                                  if (errorTxt.isNotEmpty) ...[
-                                    const SizedBox(height: 8),
-                                    Text(errorTxt, style: const TextStyle(color: Colors.red)),
-                                  ],
+                                  TextField(controller: newPinCtrl, obscureText: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'New PIN')),
+                                  if (errorTxt.isNotEmpty) ...[const SizedBox(height: 8), Text(errorTxt, style: const TextStyle(color: Colors.red))],
                                 ],
                               ),
                               actions: [
@@ -1192,14 +1232,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                                       setDState(() => errorTxt = 'Enter valid new PIN!');
                                       return;
                                     }
-                                    setState(() {
-                                      _securityPin = newPinCtrl.text.trim();
-                                    });
+                                    setState(() => _securityPin = newPinCtrl.text.trim());
                                     _saveData();
                                     Navigator.pop(ctx);
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('Master Security PIN Updated Successfully!')),
-                                    );
+                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Master Security PIN Updated!')));
                                   },
                                   child: const Text('Update PIN'),
                                 ),
@@ -1226,7 +1262,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('Export Complete Data (Backup)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const Text('Aap is button par click kar ke sara data copy ya file me save kar sakte hain.'),
+                const Text('Click kar ke sara data copy aur file me save karein.'),
                 const SizedBox(height: 12),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
@@ -1252,7 +1288,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                       context: context,
                       builder: (ctx) => AlertDialog(
                         title: const Text('Backup Created Successfully!'),
-                        content: Text('Backup saved to: ${bFile.path}\n\nData clipboard mein bhi copy ho gaya hai! Aap isay WhatsApp ya Drive par paste kar ke mehfooz rakh sakte hain.'),
+                        content: Text('Backup saved to: ${bFile.path}\n\nData clipboard mein bhi copy ho gaya hai! WhatsApp ya Drive par save kar lein.'),
                         actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
                       ),
                     );
@@ -1271,13 +1307,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('Restore Data from Backup', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const Text('Agar app dobara install karein to purana backup data yahan paste kar ke restore karein.'),
+                const Text('Purana backup text paste kar ke data wapis laein.'),
                 const SizedBox(height: 8),
-                TextField(
-                  controller: restoreTextCtrl,
-                  maxLines: 2,
-                  decoration: const InputDecoration(hintText: 'Paste backup JSON text here...', border: OutlineInputBorder()),
-                ),
+                TextField(controller: restoreTextCtrl, maxLines: 2, decoration: const InputDecoration(hintText: 'Paste backup JSON text here...', border: OutlineInputBorder())),
                 const SizedBox(height: 8),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
@@ -1286,10 +1318,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   onPressed: () async {
                     if (restoreTextCtrl.text.isEmpty) return;
                     final authorized = await _authenticateAction('Restore Database');
-                    if (!authorized) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action cancelled or unauthorized!')));
-                      return;
-                    }
+                    if (!authorized) return;
+
                     try {
                       final data = jsonDecode(restoreTextCtrl.text.trim());
                       setState(() {
