@@ -107,7 +107,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '3.0',
+        'version': '3.2',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
@@ -120,22 +120,263 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     } catch (_) {}
   }
 
-  // --- ONLINE CLOUD DATABASE SYNC ENGINE (MOBILE <-> PC) ---
+  // --- EXCEL (.CSV) & PDF (.HTML PRINTABLE) EXPORT ENGINE ---
+  Future<void> _exportDocument({required String reportType, required String format, List<Map<String, dynamic>>? customList}) async {
+    final nowStr = DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now());
+    final printDate = DateFormat('yyyy-MM-dd hh:mm a').format(DateTime.now());
+    final isPdf = format == 'PDF';
+    final ext = isPdf ? 'html' : 'csv';
+    final fileName = 'Pipe_${reportType}_${isPdf ? "PDF_Report" : "Excel"}_$nowStr.$ext';
+
+    String content = '';
+
+    if (reportType == 'STOCK') {
+      if (!isPdf) {
+        // EXCEL FORMAT
+        final StringBuffer csv = StringBuffer();
+        csv.writeln('Category,Size,Grade,SCH,Coating,Total Received,Total Returned,Total Issued,Available Balance');
+        for (var cat in categories) {
+          final specMap = <String, Map<String, String>>{};
+          for (var t in transactions) {
+            if (t['category'] == cat) {
+              final s = (t['pipeSize'] ?? '').toString().trim();
+              final g = (t['pipeGrade'] ?? '').toString().trim();
+              final sch = (t['pipeSch'] ?? '').toString().trim();
+              specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
+            }
+          }
+          for (var spec in specMap.values) {
+            final s = spec['size']!;
+            final g = spec['grade']!;
+            final sch = spec['sch']!;
+            for (var coat in coatingOptions) {
+              double rec = 0, ret = 0, iss = 0;
+              for (var t in transactions) {
+                if (t['category'] == cat &&
+                    (t['pipeSize'] ?? '').toString().trim().toLowerCase() == s.toLowerCase() &&
+                    (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == g.toLowerCase() &&
+                    (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
+                    t['internalCoating'] == coat) {
+                  double q = (t['quantity'] as num).toDouble();
+                  if (t['type'] == 'RECEIVE') rec += q;
+                  if (t['type'] == 'RETURN') ret += q;
+                  if (t['type'] == 'ISSUE') iss += q;
+                }
+              }
+              double bal = (rec + ret) - iss;
+              if (rec > 0 || ret > 0 || iss > 0) {
+                csv.writeln('"$cat","$s","$g","$sch","$coat",$rec,$ret,$iss,$bal');
+              }
+            }
+          }
+        }
+        content = csv.toString();
+      } else {
+        // PDF / PRINTABLE HTML FORMAT
+        final StringBuffer html = StringBuffer();
+        html.writeln('''<!DOCTYPE html><html><head><meta charset="utf-8">
+        <title>Pipe Store Inventory - Stock Report</title>
+        <style>
+          body { font-family: Segoe UI, Arial, sans-serif; margin: 25px; color: #1e293b; }
+          .header { border-bottom: 3px solid #1E3A8A; padding-bottom: 10px; margin-bottom: 20px; }
+          h1 { color: #1E3A8A; margin: 0 0 5px 0; font-size: 24px; }
+          .sub { font-size: 13px; color: #64748b; }
+          table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+          th { background-color: #1E3A8A; color: white; padding: 10px; text-align: left; font-size: 12px; }
+          td { padding: 9px 10px; border-bottom: 1px solid #e2e8f0; font-size: 12px; }
+          tr:nth-child(even) { background-color: #f8fafc; }
+          .bal { font-weight: bold; color: #047857; }
+          .btn-print { background: #1E3A8A; color: white; border: none; padding: 10px 20px; font-weight: bold; border-radius: 6px; cursor: pointer; margin-bottom: 20px; }
+          @media print { .no-print { display: none; } body { margin: 0; } }
+        </style></head><body>
+        <div class="no-print"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+        <div class="header">
+          <h1>Pipe Store Inventory Management System</h1>
+          <div class="sub">Report: <b>Current Live Stock Balance Summary</b> | Date Generated: $printDate</div>
+        </div>
+        <table><thead><tr>
+          <th>Category</th><th>Size</th><th>Grade</th><th>SCH</th><th>Coating</th><th>Received</th><th>Returned</th><th>Issued</th><th>Available Balance</th>
+        </tr></thead><tbody>''');
+
+        for (var cat in categories) {
+          final specMap = <String, Map<String, String>>{};
+          for (var t in transactions) {
+            if (t['category'] == cat) {
+              final s = (t['pipeSize'] ?? '').toString().trim();
+              final g = (t['pipeGrade'] ?? '').toString().trim();
+              final sch = (t['pipeSch'] ?? '').toString().trim();
+              specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
+            }
+          }
+          for (var spec in specMap.values) {
+            final s = spec['size']!;
+            final g = spec['grade']!;
+            final sch = spec['sch']!;
+            for (var coat in coatingOptions) {
+              double rec = 0, ret = 0, iss = 0;
+              for (var t in transactions) {
+                if (t['category'] == cat &&
+                    (t['pipeSize'] ?? '').toString().trim().toLowerCase() == s.toLowerCase() &&
+                    (t['pipeGrade'] ?? '').toString().trim().toLowerCase() == g.toLowerCase() &&
+                    (t['pipeSch'] ?? '').toString().trim().toLowerCase() == sch.toLowerCase() &&
+                    t['internalCoating'] == coat) {
+                  double q = (t['quantity'] as num).toDouble();
+                  if (t['type'] == 'RECEIVE') rec += q;
+                  if (t['type'] == 'RETURN') ret += q;
+                  if (t['type'] == 'ISSUE') iss += q;
+                }
+              }
+              double bal = (rec + ret) - iss;
+              if (rec > 0 || ret > 0 || iss > 0) {
+                html.writeln('<tr><td>$cat</td><td>$s</td><td>$g</td><td>$sch</td><td>$coat</td><td>$rec</td><td>$ret</td><td>$iss</td><td class="bal">$bal Qty</td></tr>');
+              }
+            }
+          }
+        }
+        html.writeln('</tbody></table></body></html>');
+        content = html.toString();
+      }
+    } else {
+      // TRANSACTIONS LEDGER REPORT (EXCEL OR PDF)
+      final list = customList ?? transactions;
+      if (!isPdf) {
+        final StringBuffer csv = StringBuffer();
+        csv.writeln('Type,Date,Category,Size,Grade,SCH,Coating,Quantity,Location / Person,JP Name,Remarks');
+        for (var t in list) {
+          if (reportType == 'RECEIVE' && t['type'] != 'RECEIVE') continue;
+          if (reportType == 'ISSUE' && t['type'] != 'ISSUE') continue;
+          if (reportType == 'RETURN' && t['type'] != 'RETURN') continue;
+
+          final type = t['type'] ?? '';
+          final date = t['date'] ?? '';
+          final cat = t['category'] ?? '';
+          final size = t['pipeSize'] ?? '';
+          final grade = t['pipeGrade'] ?? '';
+          final sch = t['pipeSch'] ?? '';
+          final coat = t['internalCoating'] ?? '';
+          final qty = t['quantity'] ?? 0;
+          final loc = (t['entity'] ?? t['location'] ?? '').toString().replaceAll('"', '""');
+          final jp = (t['jpName'] ?? '').toString().replaceAll('"', '""');
+          final remarks = (t['remarks'] ?? '').toString().replaceAll('"', '""');
+
+          csv.writeln('"$type","$date","$cat","$size","$grade","$sch","$coat",$qty,"$loc","$jp","$remarks"');
+        }
+        content = csv.toString();
+      } else {
+        final StringBuffer html = StringBuffer();
+        html.writeln('''<!DOCTYPE html><html><head><meta charset="utf-8">
+        <title>Pipe Store Inventory - $reportType Report</title>
+        <style>
+          body { font-family: Segoe UI, Arial, sans-serif; margin: 25px; color: #1e293b; }
+          .header { border-bottom: 3px solid #1E3A8A; padding-bottom: 10px; margin-bottom: 20px; }
+          h1 { color: #1E3A8A; margin: 0 0 5px 0; font-size: 24px; }
+          .sub { font-size: 13px; color: #64748b; }
+          table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+          th { background-color: #1E3A8A; color: white; padding: 10px; text-align: left; font-size: 12px; }
+          td { padding: 9px 10px; border-bottom: 1px solid #e2e8f0; font-size: 12px; }
+          tr:nth-child(even) { background-color: #f8fafc; }
+          .btn-print { background: #1E3A8A; color: white; border: none; padding: 10px 20px; font-weight: bold; border-radius: 6px; cursor: pointer; margin-bottom: 20px; }
+          @media print { .no-print { display: none; } body { margin: 0; } }
+        </style></head><body>
+        <div class="no-print"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+        <div class="header">
+          <h1>Pipe Store Inventory Management System</h1>
+          <div class="sub">Ledger Report: <b>$reportType</b> | Generated: $printDate | Records: ${list.length}</div>
+        </div>
+        <table><thead><tr>
+          <th>Type</th><th>Date</th><th>Category</th><th>Size</th><th>Grade</th><th>SCH</th><th>Coating</th><th>Qty</th><th>Location / Person</th><th>JP Name</th><th>Remarks</th>
+        </tr></thead><tbody>''');
+
+        for (var t in list) {
+          if (reportType == 'RECEIVE' && t['type'] != 'RECEIVE') continue;
+          if (reportType == 'ISSUE' && t['type'] != 'ISSUE') continue;
+          if (reportType == 'RETURN' && t['type'] != 'RETURN') continue;
+
+          html.writeln('<tr><td><b>${t['type']}</b></td><td>${t['date']}</td><td>${t['category']}</td><td>${t['pipeSize']}</td><td>${t['pipeGrade']}</td><td>${t['pipeSch']}</td><td>${t['internalCoating']}</td><td><b>${t['quantity']}</b></td><td>${t['entity'] ?? t['location'] ?? ''}</td><td>${t['jpName'] ?? ''}</td><td>${t['remarks'] ?? ''}</td></tr>');
+        }
+        html.writeln('</tbody></table></body></html>');
+        content = html.toString();
+      }
+    }
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsString(content);
+
+      Clipboard.setData(ClipboardData(text: content));
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Row(
+              children: [
+                Icon(isPdf ? Icons.picture_as_pdf : Icons.table_chart, color: isPdf ? Colors.red : Colors.green),
+                const SizedBox(width: 8),
+                Text(isPdf ? 'PDF / Printable Report' : 'Excel (.CSV) Exported'),
+              ],
+            ),
+            content: Text(
+              'File saved successfully:\n${file.path}\n\n${isPdf ? "Yeh file direct Browser mein open ho kar 'Print / Save as PDF' ke liye tayyar hai." : "Yeh file Microsoft Excel aur Google Sheets mein direct open hogi."}\n\nData clipboard mein bhi copy ho gaya hai.',
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export Error: $e')));
+      }
+    }
+  }
+
+  // Dialog to choose Excel or PDF
+  void _showExportChoiceDialog(String reportType, {List<Map<String, dynamic>>? customList}) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Export $reportType Report', style: const TextStyle(fontWeight: FontWeight.bold)),
+        content: const Text('Aap kis format mein export karna chahte hain?'),
+        actions: [
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
+            icon: const Icon(Icons.table_chart, color: Colors.white, size: 18),
+            label: const Text('Excel (.csv)', style: TextStyle(color: Colors.white)),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _exportDocument(reportType: reportType, format: 'EXCEL', customList: customList);
+            },
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade800),
+            icon: const Icon(Icons.picture_as_pdf, color: Colors.white, size: 18),
+            label: const Text('Printable PDF', style: TextStyle(color: Colors.white)),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _exportDocument(reportType: reportType, format: 'PDF', customList: customList);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- ONLINE CLOUD DATABASE SYNC ENGINE ---
   Future<void> _syncWithCloud() async {
     if (_isSyncing) return;
     setState(() => _isSyncing = true);
 
     try {
       final syncUrl = Uri.parse('https://kvdb.io/7v99E2F4gqC1Fj7746zQfH/$_cloudStoreId');
-
-      // 1. Fetch remote data from Cloud
       final response = await http.get(syncUrl).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200 && response.body.isNotEmpty) {
         final remoteData = jsonDecode(response.body);
         final remoteTxList = List<Map<String, dynamic>>.from(remoteData['transactions'] ?? []);
 
-        // Merge remote and local transactions uniquely by ID
         final localMap = {for (var t in transactions) t['id']: t};
         for (var rt in remoteTxList) {
           localMap[rt['id']] = rt;
@@ -155,7 +396,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         });
       }
 
-      // 2. Upload merged data back to Cloud
       final uploadPayload = {
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
@@ -173,7 +413,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Internet Cloud Sync Successful! ($_lastSyncStatus)')),
+          SnackBar(content: Text('Cloud Sync Successful! ($_lastSyncStatus)')),
         );
       }
     } catch (e) {
@@ -182,7 +422,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Cloud Sync Notice: Saved locally. Will sync when internet is connected.')),
+          const SnackBar(content: Text('Cloud Notice: Saved locally. Will sync when connected.')),
         );
       }
     } finally {
@@ -226,7 +466,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               ],
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
                 onPressed: () {
@@ -401,7 +641,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         title: const Text('Pipe Store Inventory', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
         backgroundColor: const Color(0xFF1E3A8A),
         actions: [
-          // CLOUD SYNC BUTTON IN APPBAR
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: _isSyncing
@@ -425,7 +664,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           NavigationDestination(icon: Icon(Icons.assignment_return), label: 'Return'),
           NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Stock'),
           NavigationDestination(icon: Icon(Icons.history), label: 'History'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Manage & Sync'),
+          NavigationDestination(icon: Icon(Icons.settings), label: 'Manage & Reports'),
         ],
       ),
     );
@@ -970,19 +1209,28 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: TextField(
-            decoration: InputDecoration(
-              prefixIcon: const Icon(Icons.search),
-              hintText: 'Search by Grade (X52), SCH (12.7), Size (24")...',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-              contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
-            ),
-            onChanged: (val) {
-              setState(() {
-                _stockSearchQuery = val.trim().toLowerCase();
-              });
-            },
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search),
+                    hintText: 'Search Grade, SCH, Size...',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+                  ),
+                  onChanged: (val) => setState(() => _stockSearchQuery = val.trim().toLowerCase()),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
+                icon: const Icon(Icons.file_download, color: Colors.white, size: 16),
+                label: const Text('Export', style: TextStyle(color: Colors.white)),
+                onPressed: () => _showExportChoiceDialog('STOCK'),
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -1157,7 +1405,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
           child: TextField(
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search),
@@ -1209,13 +1457,18 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ),
         ),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           color: Colors.blue.shade50,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text('Showing ${filtered.length} of ${transactions.length} entries', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-              const Text('PIN Protected', style: TextStyle(color: Colors.grey, fontSize: 12)),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A), padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4)),
+                icon: const Icon(Icons.file_download, color: Colors.white, size: 16),
+                label: const Text('Export (Excel / PDF)', style: TextStyle(color: Colors.white, fontSize: 12)),
+                onPressed: () => _showExportChoiceDialog(_historyTypeFilter, customList: filtered),
+              ),
             ],
           ),
         ),
@@ -1266,7 +1519,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- 6. MANAGE, BACKUP & CLOUD SYNC ---
+  // --- 6. MANAGE, BACKUP, EXCEL & PDF REPORTS ---
   Widget _buildManageAndBackup() {
     final rLocCtrl = TextEditingController();
     final iLocCtrl = TextEditingController();
@@ -1277,8 +1530,64 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // --- CLOUD SYNC SETTINGS (MOBILE <-> PC) ---
-        const Text('Internet Cloud Synchronization (Mobile & PC)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        // --- EXCEL & PDF REPORTS CARD ---
+        const Text('Excel & Printable PDF Reports', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
+        Card(
+          color: Colors.green.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.print, color: Color(0xFF1E3A8A), size: 26),
+                    SizedBox(width: 8),
+                    Text('Download Reports (Excel & PDF)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const Text('Aap har report ko Excel Spreadsheet ya Printable PDF document mein save kar sakte hain.'),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
+                      icon: const Icon(Icons.inventory, color: Colors.white, size: 16),
+                      label: const Text('Live Stock Report', style: TextStyle(color: Colors.white)),
+                      onPressed: () => _showExportChoiceDialog('STOCK'),
+                    ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
+                      icon: const Icon(Icons.download, color: Colors.white, size: 16),
+                      label: const Text('Receiving Report', style: TextStyle(color: Colors.white)),
+                      onPressed: () => _showExportChoiceDialog('RECEIVE'),
+                    ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade800),
+                      icon: const Icon(Icons.upload, color: Colors.white, size: 16),
+                      label: const Text('Issuing Report', style: TextStyle(color: Colors.white)),
+                      onPressed: () => _showExportChoiceDialog('ISSUE'),
+                    ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade800),
+                      icon: const Icon(Icons.assignment_return, color: Colors.white, size: 16),
+                      label: const Text('Returns Report', style: TextStyle(color: Colors.white)),
+                      onPressed: () => _showExportChoiceDialog('RETURN'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const Divider(height: 28),
+
+        // --- CLOUD SYNC SETTINGS ---
+        const Text('Internet Cloud Synchronization (Mobile & PC)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         Card(
           color: Colors.blue.shade50,
@@ -1295,7 +1604,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   ],
                 ),
                 const SizedBox(height: 6),
-                const Text('Mobile aur Computer dono par yeh SAME ID honi chahiye taake dono ka data aapas mein sync ho sake.'),
+                const Text('Mobile aur Computer dono par yeh SAME ID honi chahiye taake dono ka data aapas mein sync ho.'),
                 const SizedBox(height: 10),
                 Row(
                   children: [
@@ -1408,7 +1717,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         const Text('Manual File Backup', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Card(
-          color: Colors.green.shade50,
+          color: Colors.blue.shade50,
           child: Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
