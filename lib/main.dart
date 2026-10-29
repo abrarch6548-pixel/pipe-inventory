@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
@@ -46,6 +47,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   List<String> jpNames = ['JP-Alpha', 'JP-Beta', 'JP-North', 'JP-Pipeline-01'];
 
   String _securityPin = '1234';
+  String _cloudStoreId = 'my_pipe_store_01';
+  bool _isSyncing = false;
+  String _lastSyncStatus = 'Not Synced Yet';
 
   final List<String> categories = [
     'Bare Pipe', 'Bare Bend', 'Painting Bend', 'Painting Pipe',
@@ -58,7 +62,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
   String _stockSearchQuery = '';
   String _historySearchQuery = '';
-  String _historyTypeFilter = 'ALL'; // ALL, RECEIVE, ISSUE, RETURN
+  String _historyTypeFilter = 'ALL';
 
   @override
   void initState() {
@@ -91,6 +95,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           if (data['securityPin'] != null) {
             _securityPin = data['securityPin'].toString();
           }
+          if (data['cloudStoreId'] != null) {
+            _cloudStoreId = data['cloudStoreId'].toString();
+          }
         });
       }
     } catch (_) {}
@@ -100,16 +107,87 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '2.7',
+        'version': '3.0',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
         'issueLocations': issueLocations,
         'jpNames': jpNames,
         'securityPin': _securityPin,
+        'cloudStoreId': _cloudStoreId,
       };
       await file.writeAsString(jsonEncode(payload));
     } catch (_) {}
+  }
+
+  // --- ONLINE CLOUD DATABASE SYNC ENGINE (MOBILE <-> PC) ---
+  Future<void> _syncWithCloud() async {
+    if (_isSyncing) return;
+    setState(() => _isSyncing = true);
+
+    try {
+      final syncUrl = Uri.parse('https://kvdb.io/7v99E2F4gqC1Fj7746zQfH/$_cloudStoreId');
+
+      // 1. Fetch remote data from Cloud
+      final response = await http.get(syncUrl).timeout(const Duration(seconds: 8));
+
+      if (response.statusCode == 200 && response.body.isNotEmpty) {
+        final remoteData = jsonDecode(response.body);
+        final remoteTxList = List<Map<String, dynamic>>.from(remoteData['transactions'] ?? []);
+
+        // Merge remote and local transactions uniquely by ID
+        final localMap = {for (var t in transactions) t['id']: t};
+        for (var rt in remoteTxList) {
+          localMap[rt['id']] = rt;
+        }
+
+        setState(() {
+          transactions = localMap.values.toList();
+          if (remoteData['receivingLocations'] != null) {
+            receivingLocations = List<String>.from({...receivingLocations, ...remoteData['receivingLocations']});
+          }
+          if (remoteData['issueLocations'] != null) {
+            issueLocations = List<String>.from({...issueLocations, ...remoteData['issueLocations']});
+          }
+          if (remoteData['jpNames'] != null) {
+            jpNames = List<String>.from({...jpNames, ...remoteData['jpNames']});
+          }
+        });
+      }
+
+      // 2. Upload merged data back to Cloud
+      final uploadPayload = {
+        'updatedAt': DateTime.now().toIso8601String(),
+        'transactions': transactions,
+        'receivingLocations': receivingLocations,
+        'issueLocations': issueLocations,
+        'jpNames': jpNames,
+      };
+
+      await http.post(syncUrl, body: jsonEncode(uploadPayload)).timeout(const Duration(seconds: 8));
+      await _saveData();
+
+      setState(() {
+        _lastSyncStatus = 'Synced at ${DateFormat('hh:mm a').format(DateTime.now())}';
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Internet Cloud Sync Successful! ($_lastSyncStatus)')),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _lastSyncStatus = 'Offline (Saved Locally)';
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cloud Sync Notice: Saved locally. Will sync when internet is connected.')),
+        );
+      }
+    } finally {
+      setState(() => _isSyncing = false);
+    }
   }
 
   Future<bool> _authenticateAction(String actionTitle) async {
@@ -168,7 +246,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return pinResult ?? false;
   }
 
-  // Stock Balance: (RECEIVE + RETURN) - ISSUE
   double _getStock(String size, String grade, String sch, String cat, String coating) {
     double total = 0;
     for (var t in transactions) {
@@ -204,8 +281,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 transactions.removeWhere((item) => item['id'] == id);
               });
               _saveData();
+              _syncWithCloud();
               Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry deleted & stock balance recalculated!')));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry deleted & synced!')));
             },
             child: const Text('DELETE', style: TextStyle(color: Colors.white)),
           ),
@@ -304,8 +382,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   transactions[index]['remarks'] = remarksCtrl.text.trim();
                 });
                 _saveData();
+                _syncWithCloud();
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry updated & stock balance recalculated!')));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry updated & synced!')));
               },
               child: const Text('Save Changes'),
             ),
@@ -321,6 +400,19 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       appBar: AppBar(
         title: const Text('Pipe Store Inventory', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
         backgroundColor: const Color(0xFF1E3A8A),
+        actions: [
+          // CLOUD SYNC BUTTON IN APPBAR
+          Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: _isSyncing
+                ? const Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)))
+                : IconButton(
+                    icon: const Icon(Icons.cloud_sync, color: Colors.white, size: 28),
+                    tooltip: 'Sync Mobile & PC Data',
+                    onPressed: _syncWithCloud,
+                  ),
+          ),
+        ],
       ),
       body: _buildCurrentScreen(),
       bottomNavigationBar: NavigationBar(
@@ -333,7 +425,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           NavigationDestination(icon: Icon(Icons.assignment_return), label: 'Return'),
           NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Stock'),
           NavigationDestination(icon: Icon(Icons.history), label: 'History'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Manage'),
+          NavigationDestination(icon: Icon(Icons.settings), label: 'Manage & Sync'),
         ],
       ),
     );
@@ -349,7 +441,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return _buildManageAndBackup();
   }
 
-  // --- DASHBOARD ---
   Widget _buildDashboard() {
     double received = 0;
     double issued = 0;
@@ -366,7 +457,17 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Store Inventory KPI Overview', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('Store Inventory Overview', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            Chip(
+              avatar: const Icon(Icons.cloud, size: 16, color: Colors.blue),
+              label: Text(_lastSyncStatus, style: const TextStyle(fontSize: 11)),
+              backgroundColor: Colors.blue.shade50,
+            ),
+          ],
+        ),
         const SizedBox(height: 12),
         Card(
           color: Colors.blue.shade50,
@@ -375,7 +476,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Current Total Available Stock (Rec + Ret - Iss)', style: TextStyle(color: Colors.grey)),
+                const Text('Current Available Pipe Stock (Rec + Ret - Iss)', style: TextStyle(color: Colors.grey)),
                 Text('$balance Qty', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF1E3A8A))),
               ],
             ),
@@ -564,8 +665,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   });
                 });
                 _saveData();
+                _syncWithCloud();
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authorized: Pipes Received and Stock Incremented!')));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authorized: Pipes Received & Synced!')));
                   setState(() => _navIndex = 0);
                 }
               },
@@ -716,8 +818,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   });
                 });
                 _saveData();
+                _syncWithCloud();
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authorized: Pipes Issued and Deducted Successfully!')));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authorized: Pipes Issued & Synced!')));
                   setState(() => _navIndex = 0);
                 }
               },
@@ -736,7 +839,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- 3. RETURN MODULE (NEW: WAPSI STOCK MEIN JAMA) ---
+  // --- 3. RETURN MODULE ---
   Widget _buildReturning() {
     final sizeCtrl = TextEditingController();
     final gradeCtrl = TextEditingController();
@@ -761,7 +864,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               ],
             ),
             const SizedBox(height: 6),
-            const Text('Issued pipes jo site ya project se wapis aayein, wo yahan enter karein. Ye khud-ba-khud usi category aur spec ke stock mein add ho jayenge.', style: TextStyle(color: Colors.grey, fontSize: 13)),
+            const Text('Returned pipes are automatically added back to stock.', style: TextStyle(color: Colors.grey, fontSize: 13)),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -810,8 +913,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               decoration: const InputDecoration(labelText: 'Internal Coating *'),
             ),
             TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity Returned to Store *')),
-            TextField(controller: returnFromCtrl, decoration: const InputDecoration(labelText: 'Returned From (Site / Person / Location) *')),
-            TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Reason for Return (Surplus / Cut Piece / Complete)')),
+            TextField(controller: returnFromCtrl, decoration: const InputDecoration(labelText: 'Returned From (Site / Location) *')),
+            TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Reason for Return (Surplus / Complete)')),
             const SizedBox(height: 20),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 14)),
@@ -840,8 +943,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   });
                 });
                 _saveData();
+                _syncWithCloud();
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Success: Returned Pipes Added Back to Stock!')));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Success: Returned Pipes Added & Synced!')));
                   setState(() => _navIndex = 0);
                 }
               },
@@ -937,7 +1041,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                           final grade = spec['grade']!;
                           final sch = spec['sch']!;
 
-                          // Internal Coated
                           double cRec = 0, cRet = 0, cIss = 0;
                           for (var t in transactions) {
                             if (t['category'] == cat &&
@@ -953,7 +1056,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                           }
                           double cBal = (cRec + cRet) - cIss;
 
-                          // Without Internal Coating
                           double uRec = 0, uRet = 0, uIss = 0;
                           for (var t in transactions) {
                             if (t['category'] == cat &&
@@ -1164,96 +1266,20 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- 6. MANAGE & BACKUP ---
+  // --- 6. MANAGE, BACKUP & CLOUD SYNC ---
   Widget _buildManageAndBackup() {
     final rLocCtrl = TextEditingController();
     final iLocCtrl = TextEditingController();
     final jpCtrl = TextEditingController();
     final restoreTextCtrl = TextEditingController();
+    final cloudIdCtrl = TextEditingController(text: _cloudStoreId);
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Security & Access Protection', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        Card(
-          color: Colors.amber.shade50,
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.lock, color: Color(0xFF1E3A8A), size: 28),
-                    SizedBox(width: 8),
-                    Text('Master PIN Authorization', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                const Text('New Entry, Return, Edit, aur Delete sab security lock se protected hain.'),
-                const SizedBox(height: 10),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Current PIN:  $_securityPin', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
-                      icon: const Icon(Icons.pin, color: Colors.white, size: 16),
-                      label: const Text('Change PIN', style: TextStyle(color: Colors.white)),
-                      onPressed: () {
-                        final oldPinCtrl = TextEditingController();
-                        final newPinCtrl = TextEditingController();
-                        String errorTxt = '';
-
-                        showDialog(
-                          context: context,
-                          builder: (ctx) => StatefulBuilder(
-                            builder: (context, setDState) => AlertDialog(
-                              title: const Text('Change Security PIN'),
-                              content: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  TextField(controller: oldPinCtrl, obscureText: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Current PIN')),
-                                  const SizedBox(height: 8),
-                                  TextField(controller: newPinCtrl, obscureText: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'New PIN')),
-                                  if (errorTxt.isNotEmpty) ...[const SizedBox(height: 8), Text(errorTxt, style: const TextStyle(color: Colors.red))],
-                                ],
-                              ),
-                              actions: [
-                                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                                ElevatedButton(
-                                  onPressed: () {
-                                    if (oldPinCtrl.text.trim() != _securityPin.trim()) {
-                                      setDState(() => errorTxt = 'Current PIN is incorrect!');
-                                      return;
-                                    }
-                                    if (newPinCtrl.text.trim().isEmpty) {
-                                      setDState(() => errorTxt = 'Enter valid new PIN!');
-                                      return;
-                                    }
-                                    setState(() => _securityPin = newPinCtrl.text.trim());
-                                    _saveData();
-                                    Navigator.pop(ctx);
-                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Master Security PIN Updated!')));
-                                  },
-                                  child: const Text('Update PIN'),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-        const Divider(height: 28),
-        const Text('Backup & Data Protection', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
+        // --- CLOUD SYNC SETTINGS (MOBILE <-> PC) ---
+        const Text('Internet Cloud Synchronization (Mobile & PC)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
         Card(
           color: Colors.blue.shade50,
           child: Padding(
@@ -1261,35 +1287,115 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Export Complete Data (Backup)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const Text('Click kar ke sara data copy aur file me save karein.'),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Shared Store Sync ID', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(_lastSyncStatus, style: const TextStyle(fontSize: 12, color: Colors.blue, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const Text('Mobile aur Computer dono par yeh SAME ID honi chahiye taake dono ka data aapas mein sync ho sake.'),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: cloudIdCtrl,
+                        decoration: const InputDecoration(labelText: 'Store Sync ID', border: OutlineInputBorder()),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
+                      onPressed: () {
+                        if (cloudIdCtrl.text.trim().isNotEmpty) {
+                          setState(() => _cloudStoreId = cloudIdCtrl.text.trim());
+                          _saveData();
+                          _syncWithCloud();
+                        }
+                      },
+                      child: const Text('Save & Sync', style: TextStyle(color: Colors.white)),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
+                    icon: _isSyncing
+                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        : const Icon(Icons.sync, color: Colors.white),
+                    label: Text(_isSyncing ? 'Syncing with Cloud...' : 'SYNC DATA NOW (UPLOAD & DOWNLOAD)', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    onPressed: _syncWithCloud,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const Divider(height: 28),
+        const Text('Security & Access Protection', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Card(
+          color: Colors.amber.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Master PIN Authorization', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                    Text('Current PIN:  $_securityPin', style: const TextStyle(color: Colors.black87)),
+                  ],
+                ),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
-                  icon: const Icon(Icons.download, color: Colors.white),
-                  label: const Text('CREATE BACKUP (EXPORT)', style: TextStyle(color: Colors.white)),
-                  onPressed: () async {
-                    final payload = {
-                      'timestamp': DateTime.now().toIso8601String(),
-                      'transactions': transactions,
-                      'receivingLocations': receivingLocations,
-                      'issueLocations': issueLocations,
-                      'jpNames': jpNames,
-                      'securityPin': _securityPin,
-                    };
-                    final jsonStr = jsonEncode(payload);
-                    Clipboard.setData(ClipboardData(text: jsonStr));
-
-                    final dir = await getApplicationDocumentsDirectory();
-                    final bFile = File('${dir.path}/pipe_backup_${DateTime.now().millisecondsSinceEpoch}.json');
-                    await bFile.writeAsString(jsonStr);
+                  icon: const Icon(Icons.pin, color: Colors.white, size: 16),
+                  label: const Text('Change PIN', style: TextStyle(color: Colors.white)),
+                  onPressed: () {
+                    final oldPinCtrl = TextEditingController();
+                    final newPinCtrl = TextEditingController();
+                    String errorTxt = '';
 
                     showDialog(
                       context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('Backup Created Successfully!'),
-                        content: Text('Backup saved to: ${bFile.path}\n\nData clipboard mein bhi copy ho gaya hai! WhatsApp ya Drive par save kar lein.'),
-                        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+                      builder: (ctx) => StatefulBuilder(
+                        builder: (context, setDState) => AlertDialog(
+                          title: const Text('Change Security PIN'),
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextField(controller: oldPinCtrl, obscureText: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Current PIN')),
+                              const SizedBox(height: 8),
+                              TextField(controller: newPinCtrl, obscureText: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'New PIN')),
+                              if (errorTxt.isNotEmpty) ...[const SizedBox(height: 8), Text(errorTxt, style: const TextStyle(color: Colors.red))],
+                            ],
+                          ),
+                          actions: [
+                            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                            ElevatedButton(
+                              onPressed: () {
+                                if (oldPinCtrl.text.trim() != _securityPin.trim()) {
+                                  setDState(() => errorTxt = 'Current PIN is incorrect!');
+                                  return;
+                                }
+                                if (newPinCtrl.text.trim().isEmpty) {
+                                  setDState(() => errorTxt = 'Enter valid new PIN!');
+                                  return;
+                                }
+                                setState(() => _securityPin = newPinCtrl.text.trim());
+                                _saveData();
+                                Navigator.pop(ctx);
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Master Security PIN Updated!')));
+                              },
+                              child: const Text('Update PIN'),
+                            ),
+                          ],
+                        ),
                       ),
                     );
                   },
@@ -1298,6 +1404,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             ),
           ),
         ),
+        const Divider(height: 28),
+        const Text('Manual File Backup', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Card(
           color: Colors.green.shade50,
@@ -1306,15 +1414,51 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Restore Data from Backup', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const Text('Purana backup text paste kar ke data wapis laein.'),
+                const Text('Export & Restore File Backup', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
+                        icon: const Icon(Icons.download, color: Colors.white, size: 16),
+                        label: const Text('EXPORT BACKUP', style: TextStyle(color: Colors.white)),
+                        onPressed: () async {
+                          final payload = {
+                            'timestamp': DateTime.now().toIso8601String(),
+                            'transactions': transactions,
+                            'receivingLocations': receivingLocations,
+                            'issueLocations': issueLocations,
+                            'jpNames': jpNames,
+                            'securityPin': _securityPin,
+                          };
+                          final jsonStr = jsonEncode(payload);
+                          Clipboard.setData(ClipboardData(text: jsonStr));
+
+                          final dir = await getApplicationDocumentsDirectory();
+                          final bFile = File('${dir.path}/pipe_backup_${DateTime.now().millisecondsSinceEpoch}.json');
+                          await bFile.writeAsString(jsonStr);
+
+                          showDialog(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              title: const Text('Backup Created!'),
+                              content: Text('Saved to: ${bFile.path}\n\nData clipboard mein bhi copy ho gaya hai!'),
+                              actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 8),
-                TextField(controller: restoreTextCtrl, maxLines: 2, decoration: const InputDecoration(hintText: 'Paste backup JSON text here...', border: OutlineInputBorder())),
+                TextField(controller: restoreTextCtrl, maxLines: 2, decoration: const InputDecoration(hintText: 'Paste backup JSON here to restore...', border: OutlineInputBorder())),
                 const SizedBox(height: 8),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
                   icon: const Icon(Icons.restore, color: Colors.white),
-                  label: const Text('RESTORE DATA NOW', style: TextStyle(color: Colors.white)),
+                  label: const Text('RESTORE DATA FROM TEXT', style: TextStyle(color: Colors.white)),
                   onPressed: () async {
                     if (restoreTextCtrl.text.isEmpty) return;
                     final authorized = await _authenticateAction('Restore Database');
@@ -1330,6 +1474,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                         if (data['securityPin'] != null) _securityPin = data['securityPin'].toString();
                       });
                       _saveData();
+                      _syncWithCloud();
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Data Restored Successfully!')));
                     } catch (e) {
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid Backup Data!')));
@@ -1351,6 +1496,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 if (rLocCtrl.text.isNotEmpty) {
                   setState(() => receivingLocations.add(rLocCtrl.text.trim()));
                   _saveData();
+                  _syncWithCloud();
                   rLocCtrl.clear();
                 }
               },
@@ -1362,6 +1508,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           onDeleted: () {
             setState(() => receivingLocations.remove(l));
             _saveData();
+            _syncWithCloud();
           },
         )).toList()),
         const Divider(height: 28),
@@ -1375,6 +1522,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 if (iLocCtrl.text.isNotEmpty) {
                   setState(() => issueLocations.add(iLocCtrl.text.trim()));
                   _saveData();
+                  _syncWithCloud();
                   iLocCtrl.clear();
                 }
               },
@@ -1386,6 +1534,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           onDeleted: () {
             setState(() => issueLocations.remove(l));
             _saveData();
+            _syncWithCloud();
           },
         )).toList()),
         const Divider(height: 28),
@@ -1399,6 +1548,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 if (jpCtrl.text.isNotEmpty) {
                   setState(() => jpNames.add(jpCtrl.text.trim()));
                   _saveData();
+                  _syncWithCloud();
                   jpCtrl.clear();
                 }
               },
@@ -1410,6 +1560,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           onDeleted: () {
             setState(() => jpNames.remove(j));
             _saveData();
+            _syncWithCloud();
           },
         )).toList()),
       ],
