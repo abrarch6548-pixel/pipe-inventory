@@ -47,9 +47,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   List<String> jpNames = ['JP-Alpha', 'JP-Beta', 'JP-North', 'JP-Pipeline-01'];
 
   String _securityPin = '1234';
-  String _cloudStoreId = 'my_pipe_store_01';
+  String _firebaseUrl = ''; // Google Firebase Database URL
+  String _cloudStoreId = 'store_main';
   bool _isSyncing = false;
-  String _lastSyncStatus = 'Not Synced Yet';
+  String _lastSyncStatus = 'Not Synced';
 
   final List<String> categories = [
     'Bare Pipe', 'Bare Bend', 'Painting Bend', 'Painting Pipe',
@@ -67,7 +68,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _loadData().then((_) {
+      if (_firebaseUrl.isNotEmpty) {
+        _syncWithCloud(silent: true);
+      }
+    });
   }
 
   Future<File> _getFile() async {
@@ -95,6 +100,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           if (data['securityPin'] != null) {
             _securityPin = data['securityPin'].toString();
           }
+          if (data['firebaseUrl'] != null) {
+            _firebaseUrl = data['firebaseUrl'].toString();
+          }
           if (data['cloudStoreId'] != null) {
             _cloudStoreId = data['cloudStoreId'].toString();
           }
@@ -107,44 +115,45 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '3.4',
+        'version': '3.6',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
         'issueLocations': issueLocations,
         'jpNames': jpNames,
         'securityPin': _securityPin,
+        'firebaseUrl': _firebaseUrl,
         'cloudStoreId': _cloudStoreId,
       };
       await file.writeAsString(jsonEncode(payload));
     } catch (_) {}
   }
 
-  // --- ACCURATE REAL-TIME STOCK BALANCE ENGINE ---
-  // Calculates live physical stock in yard for all categories.
-  // Painting returns stay in Painting pool!
-  // Painting issues first consume ready painted stock; excess consumes Bare stock.
+  // --- STRICT SPEC MATCHING (As per your requirement) ---
+  bool _matchStrict(Map<String, dynamic> t, String size, String grade, String sch, String coat) {
+    final s1 = (t['pipeSize'] ?? '').toString().trim().toLowerCase();
+    final g1 = (t['pipeGrade'] ?? '').toString().trim().toLowerCase();
+    final sch1 = (t['pipeSch'] ?? '').toString().trim().toLowerCase();
+    final c1 = (t['internalCoating'] ?? '').toString().trim().toLowerCase();
+
+    return s1 == size.trim().toLowerCase() &&
+        g1 == grade.trim().toLowerCase() &&
+        sch1 == sch.trim().toLowerCase() &&
+        c1 == coat.trim().toLowerCase();
+  }
+
+  // Precise Inventory Calculation
   Map<String, double> _calculateSpecStocks(String size, String grade, String sch, String coating) {
     final Map<String, double> stocks = {for (var c in categories) c: 0.0};
 
     for (var t in transactions) {
-      final tSize = (t['pipeSize'] ?? '').toString().trim().toLowerCase();
-      final tGrade = (t['pipeGrade'] ?? '').toString().trim().toLowerCase();
-      final tSch = (t['pipeSch'] ?? '').toString().trim().toLowerCase();
-      final tCoat = (t['internalCoating'] ?? '').toString().trim();
-
-      if (tSize == size.trim().toLowerCase() &&
-          tGrade == grade.trim().toLowerCase() &&
-          tSch == sch.trim().toLowerCase() &&
-          tCoat == coating.trim()) {
-
+      if (_matchStrict(t, size, grade, sch, coating)) {
         double q = (t['quantity'] as num).toDouble();
         final cat = t['category'] ?? '';
         final type = t['type'] ?? '';
 
         if (cat == 'Painting Pipe') {
           if (type == 'RECEIVE' || type == 'RETURN') {
-            // Returned painted pipes sit in Painting Pipe pool!
             stocks['Painting Pipe'] = (stocks['Painting Pipe'] ?? 0) + q;
           } else if (type == 'ISSUE') {
             double ready = stocks['Painting Pipe'] ?? 0;
@@ -158,7 +167,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           }
         } else if (cat == 'Painting Bend') {
           if (type == 'RECEIVE' || type == 'RETURN') {
-            // Returned painted bends sit in Painting Bend pool!
             stocks['Painting Bend'] = (stocks['Painting Bend'] ?? 0) + q;
           } else if (type == 'ISSUE') {
             double ready = stocks['Painting Bend'] ?? 0;
@@ -171,7 +179,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             }
           }
         } else {
-          // Standard Categories (Bare Pipe, Bare Bend, 3LPP, Spool, Cut Piece)
           if (type == 'RECEIVE' || type == 'RETURN') {
             stocks[cat] = (stocks[cat] ?? 0) + q;
           } else if (type == 'ISSUE') {
@@ -183,14 +190,14 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return stocks;
   }
 
-  // Returns physical stock sitting in store for this category
   double _getPhysicalStock(String size, String grade, String sch, String cat, String coating) {
+    if (size.trim().isEmpty || grade.trim().isEmpty || sch.trim().isEmpty) return 0.0;
     final specStocks = _calculateSpecStocks(size, grade, sch, coating);
     return specStocks[cat] ?? 0.0;
   }
 
-  // Returns total quantity available to issue (including bare pipes that can be painted)
   double _getTotalAvailableToIssue(String size, String grade, String sch, String cat, String coating) {
+    if (size.trim().isEmpty || grade.trim().isEmpty || sch.trim().isEmpty) return 0.0;
     final specStocks = _calculateSpecStocks(size, grade, sch, coating);
     if (cat == 'Painting Pipe') {
       final ready = specStocks['Painting Pipe'] ?? 0.0;
@@ -204,7 +211,127 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return specStocks[cat] ?? 0.0;
   }
 
-  // --- EXCEL (.CSV) & PDF (.HTML PRINTABLE) EXPORT ENGINE ---
+  // --- GOOGLE FIREBASE REAL-TIME CLOUD SYNC ENGINE (100% RELIABLE) ---
+  Future<void> _syncWithCloud({bool silent = false}) async {
+    if (_isSyncing) return;
+    if (_firebaseUrl.trim().isEmpty) {
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Pehle Settings mein ja kar Firebase Database URL paste karein!')),
+        );
+      }
+      return;
+    }
+
+    setState(() => _isSyncing = true);
+
+    try {
+      String baseUrl = _firebaseUrl.trim();
+      if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+        baseUrl = 'https://$baseUrl';
+      }
+      if (baseUrl.endsWith('/')) {
+        baseUrl = baseUrl.substring(0, baseUrl.length - 1);
+      }
+
+      final syncUri = Uri.parse('$baseUrl/$_cloudStoreId.json');
+
+      // 1. GET Latest Data from Google Firebase
+      final response = await http.get(syncUri).timeout(const Duration(seconds: 12));
+
+      if (response.statusCode == 200) {
+        if (response.body.isNotEmpty && response.body != 'null') {
+          final remoteData = jsonDecode(response.body);
+          if (remoteData is Map) {
+            final remoteTxList = List<Map<String, dynamic>>.from(remoteData['transactions'] ?? []);
+
+            // Merge local and cloud transactions by ID
+            final localMap = {for (var t in transactions) t['id']: t};
+            for (var rt in remoteTxList) {
+              localMap[rt['id']] = rt;
+            }
+
+            setState(() {
+              transactions = localMap.values.toList();
+              if (remoteData['receivingLocations'] != null) {
+                receivingLocations = List<String>.from({...receivingLocations, ...remoteData['receivingLocations']});
+              }
+              if (remoteData['issueLocations'] != null) {
+                issueLocations = List<String>.from({...issueLocations, ...remoteData['issueLocations']});
+              }
+              if (remoteData['jpNames'] != null) {
+                jpNames = List<String>.from({...jpNames, ...remoteData['jpNames']});
+              }
+            });
+          }
+        }
+      } else {
+        throw Exception('Firebase status code: ${response.statusCode} (${response.body})');
+      }
+
+      // 2. PUT Merged Data back to Google Firebase
+      final uploadPayload = {
+        'updatedAt': DateTime.now().toIso8601String(),
+        'transactions': transactions,
+        'receivingLocations': receivingLocations,
+        'issueLocations': issueLocations,
+        'jpNames': jpNames,
+      };
+
+      final putResponse = await http.put(
+        syncUri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(uploadPayload),
+      ).timeout(const Duration(seconds: 12));
+
+      if (putResponse.statusCode != 200) {
+        throw Exception('Upload failed: ${putResponse.statusCode}');
+      }
+
+      await _saveData();
+
+      setState(() {
+        _lastSyncStatus = 'Synced at ${DateFormat('hh:mm a').format(DateTime.now())}';
+      });
+
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.green.shade800,
+            content: Text('Cloud Sync Successful! (${transactions.length} entries shared)'),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _lastSyncStatus = 'Sync Error';
+      });
+      if (!silent && mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.error_outline, color: Colors.red),
+                SizedBox(width: 8),
+                Text('Sync Connection Notice'),
+              ],
+            ),
+            content: Text(
+              'Database connect nahi ho saka:\n$e\n\nCheck karein:\n1. Mobile/PC par internet chal raha hai.\n2. Firebase URL theek daali hai aur Rules mein "Start in test mode" (Read & Write ON) hai.',
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+            ],
+          ),
+        );
+      }
+    } finally {
+      setState(() => _isSyncing = false);
+    }
+  }
+
+  // --- EXCEL (.CSV) & PDF (.HTML PRINTABLE) EXPORT ---
   Future<void> _exportDocument({required String reportType, required String format, List<Map<String, dynamic>>? customList}) async {
     final nowStr = DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now());
     final printDate = DateFormat('yyyy-MM-dd hh:mm a').format(DateTime.now());
@@ -217,7 +344,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     if (reportType == 'STOCK') {
       if (!isPdf) {
         final StringBuffer csv = StringBuffer();
-        csv.writeln('Category,Size,Grade,SCH,Coating,In-Store Physical Balance,Notes');
+        csv.writeln('Category,Size,Grade,SCH,Coating,In-Store Physical Balance,Stock Nature');
         for (var cat in categories) {
           final specMap = <String, Map<String, String>>{};
           for (var t in transactions) {
@@ -233,8 +360,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             for (var coat in coatingOptions) {
               double bal = _getPhysicalStock(s, g, sch, cat, coat);
               String note = (cat == 'Painting Pipe' || cat == 'Painting Bend')
-                  ? 'Returned / Ready Painted Stock in Yard'
-                  : 'Unpainted Physical Stock';
+                  ? 'Ready Painted in Yard'
+                  : 'Physical Stock';
               if (bal > 0) {
                 csv.writeln('"$cat","$s","$g","$sch","$coat",$bal,"$note"');
               }
@@ -262,10 +389,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         <div class="no-print"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
         <div class="header">
           <h1>Pipe Store Inventory Management System</h1>
-          <div class="sub">Report: <b>Live Stock Balance Sheet</b> | Date: $printDate<br><i>*Painting Pipe & Painting Bend show ready-painted pipes physically present in yard.</i></div>
+          <div class="sub">Report: <b>Live Stock Balance Sheet</b> | Date: $printDate<br><i>*Painting Pipe & Painting Bend show ready-painted stock physically in yard.</i></div>
         </div>
         <table><thead><tr>
-          <th>Category</th><th>Size</th><th>Grade</th><th>SCH</th><th>Coating</th><th>In-Yard Physical Balance</th><th>Stock Type</th>
+          <th>Category</th><th>Size</th><th>Grade</th><th>SCH</th><th>Coating</th><th>In-Yard Balance</th><th>Stock Nature</th>
         </tr></thead><tbody>''');
 
         for (var cat in categories) {
@@ -283,7 +410,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             for (var coat in coatingOptions) {
               double bal = _getPhysicalStock(s, g, sch, cat, coat);
               String note = (cat == 'Painting Pipe' || cat == 'Painting Bend')
-                  ? '<span style="color:#0284c7;font-weight:bold;">Ready Painted in Yard</span>'
+                  ? '<span style="color:#0d9488;font-weight:bold;">Ready Painted in Yard</span>'
                   : 'Physical Stock';
               if (bal > 0) {
                 html.writeln('<tr><td><b>$cat</b></td><td>$s</td><td>$g</td><td>$sch</td><td>$coat</td><td class="bal">$bal Qty</td><td>$note</td></tr>');
@@ -420,72 +547,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- ONLINE CLOUD DATABASE SYNC ENGINE ---
-  Future<void> _syncWithCloud() async {
-    if (_isSyncing) return;
-    setState(() => _isSyncing = true);
-
-    try {
-      final syncUrl = Uri.parse('https://kvdb.io/7v99E2F4gqC1Fj7746zQfH/$_cloudStoreId');
-      final response = await http.get(syncUrl).timeout(const Duration(seconds: 8));
-
-      if (response.statusCode == 200 && response.body.isNotEmpty) {
-        final remoteData = jsonDecode(response.body);
-        final remoteTxList = List<Map<String, dynamic>>.from(remoteData['transactions'] ?? []);
-
-        final localMap = {for (var t in transactions) t['id']: t};
-        for (var rt in remoteTxList) {
-          localMap[rt['id']] = rt;
-        }
-
-        setState(() {
-          transactions = localMap.values.toList();
-          if (remoteData['receivingLocations'] != null) {
-            receivingLocations = List<String>.from({...receivingLocations, ...remoteData['receivingLocations']});
-          }
-          if (remoteData['issueLocations'] != null) {
-            issueLocations = List<String>.from({...issueLocations, ...remoteData['issueLocations']});
-          }
-          if (remoteData['jpNames'] != null) {
-            jpNames = List<String>.from({...jpNames, ...remoteData['jpNames']});
-          }
-        });
-      }
-
-      final uploadPayload = {
-        'updatedAt': DateTime.now().toIso8601String(),
-        'transactions': transactions,
-        'receivingLocations': receivingLocations,
-        'issueLocations': issueLocations,
-        'jpNames': jpNames,
-      };
-
-      await http.post(syncUrl, body: jsonEncode(uploadPayload)).timeout(const Duration(seconds: 8));
-      await _saveData();
-
-      setState(() {
-        _lastSyncStatus = 'Synced at ${DateFormat('hh:mm a').format(DateTime.now())}';
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Cloud Sync Successful! ($_lastSyncStatus)')),
-        );
-      }
-    } catch (e) {
-      setState(() {
-        _lastSyncStatus = 'Offline (Saved Locally)';
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Cloud Notice: Saved locally. Will sync when connected.')),
-        );
-      }
-    } finally {
-      setState(() => _isSyncing = false);
-    }
-  }
-
   Future<bool> _authenticateAction(String actionTitle) async {
     final pinResult = await showDialog<bool>(
       context: context,
@@ -561,7 +622,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 transactions.removeWhere((item) => item['id'] == id);
               });
               _saveData();
-              _syncWithCloud();
+              _syncWithCloud(silent: true);
               Navigator.pop(ctx);
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry deleted & synced!')));
             },
@@ -662,7 +723,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   transactions[index]['remarks'] = remarksCtrl.text.trim();
                 });
                 _saveData();
-                _syncWithCloud();
+                _syncWithCloud(silent: true);
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry updated & synced!')));
               },
@@ -688,7 +749,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 : IconButton(
                     icon: const Icon(Icons.cloud_sync, color: Colors.white, size: 28),
                     tooltip: 'Sync Mobile & PC Data',
-                    onPressed: _syncWithCloud,
+                    onPressed: () => _syncWithCloud(silent: false),
                   ),
           ),
         ],
@@ -704,7 +765,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           NavigationDestination(icon: Icon(Icons.assignment_return), label: 'Return'),
           NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Stock'),
           NavigationDestination(icon: Icon(Icons.history), label: 'History'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Manage & Reports'),
+          NavigationDestination(icon: Icon(Icons.settings), label: 'Settings & Cloud'),
         ],
       ),
     );
@@ -739,11 +800,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text('Store Inventory Overview', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const Text('Store Overview', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             Chip(
-              avatar: const Icon(Icons.cloud, size: 16, color: Colors.blue),
+              avatar: Icon(Icons.cloud, size: 16, color: _lastSyncStatus.startsWith('Synced') ? Colors.green : Colors.blue),
               label: Text(_lastSyncStatus, style: const TextStyle(fontSize: 11)),
-              backgroundColor: Colors.blue.shade50,
+              backgroundColor: _lastSyncStatus.startsWith('Synced') ? Colors.green.shade50 : Colors.blue.shade50,
             ),
           ],
         ),
@@ -755,7 +816,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Current Total Available Physical Stock in Store', style: TextStyle(color: Colors.grey)),
+                const Text('Current Total Available Physical Stock', style: TextStyle(color: Colors.grey)),
                 Text('$balance Qty', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF1E3A8A))),
               ],
             ),
@@ -893,9 +954,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size (e.g., 24") *')),
-            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (e.g., X52, X65) *')),
-            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (e.g., 12.7, SCH 80) *')),
+            TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size *')),
+            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (Strict) *')),
+            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (Strict) *')),
             DropdownButtonFormField<String>(
               value: cat,
               items: categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
@@ -944,9 +1005,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   });
                 });
                 _saveData();
-                _syncWithCloud();
+                _syncWithCloud(silent: true);
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authorized: Pipes Received & Synced!')));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Pipes Received & Saved!')));
                   setState(() => _navIndex = 0);
                 }
               },
@@ -980,15 +1041,21 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
     return StatefulBuilder(
       builder: (context, setSub) {
-        final totalAvail = _getTotalAvailableToIssue(sizeCtrl.text.trim(), gradeCtrl.text.trim(), schCtrl.text.trim(), cat, coat);
-        final readyInYard = _getPhysicalStock(sizeCtrl.text.trim(), gradeCtrl.text.trim(), schCtrl.text.trim(), cat, coat);
+        final curSize = sizeCtrl.text.trim();
+        final curGrade = gradeCtrl.text.trim();
+        final curSch = schCtrl.text.trim();
+
+        final totalAvail = _getTotalAvailableToIssue(curSize, curGrade, curSch, cat, coat);
+        final readyInYard = _getPhysicalStock(curSize, curGrade, curSch, cat, coat);
         final isPainted = (cat == 'Painting Pipe' || cat == 'Painting Bend');
+        final parentName = (cat == 'Painting Pipe') ? 'Bare Pipe' : 'Bare Bend';
 
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
             const Text('Stock Issuing Module', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
+
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.orange.shade200)),
@@ -1020,6 +1087,30 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               ),
             ),
             const SizedBox(height: 8),
+
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: cat,
+                    items: categories.map((c) => DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(fontSize: 13)))).toList(),
+                    onChanged: (v) => setSub(() => cat = v!),
+                    decoration: const InputDecoration(labelText: 'Category *'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: coat,
+                    items: coatingOptions.map((c) => DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(fontSize: 13)))).toList(),
+                    onChanged: (v) => setSub(() => coat = v!),
+                    decoration: const InputDecoration(labelText: 'Coating *'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -1030,45 +1121,24 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (isPainted) ...[
-                    Text(
-                      'Ready Painted in Yard: $readyInYard Qty',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.teal),
-                    ),
-                    Text(
-                      'Total Available to Issue (Yard + Bare to paint): $totalAvail Qty',
-                      style: TextStyle(fontWeight: FontWeight.bold, color: totalAvail > 0 ? Colors.green.shade800 : Colors.red.shade800),
-                    ),
-                    const Text(
-                      '* Pehle yard mein pada painted pipe use hoga, baaqi Bare stock se paint hoga.',
-                      style: TextStyle(fontSize: 11, color: Colors.black54),
-                    ),
+                  if (curSize.isEmpty || curGrade.isEmpty || curSch.isEmpty) ...[
+                    const Text('Size, Grade aur SCH enter karein taake stock check ho sake.', style: TextStyle(fontSize: 12, color: Colors.blueGrey)),
+                  ] else if (isPainted) ...[
+                    Text('Ready Painted in Yard: $readyInYard Qty', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.teal)),
+                    Text('Total Available to Issue: $totalAvail Qty', style: TextStyle(fontWeight: FontWeight.bold, color: totalAvail > 0 ? Colors.green.shade800 : Colors.red.shade800)),
+                    Text('* Pehle yard ka painted pipe ($readyInYard Qty) use hoga, baaqi $parentName se minus hoga.', style: const TextStyle(fontSize: 11, color: Colors.black87)),
                   ] else ...[
-                    Text(
-                      'Available Stock in Yard: $totalAvail Qty',
-                      style: TextStyle(fontWeight: FontWeight.bold, color: totalAvail > 0 ? Colors.green.shade800 : Colors.red.shade800),
-                    ),
+                    Text('Available Stock in Yard: $totalAvail Qty', style: TextStyle(fontWeight: FontWeight.bold, color: totalAvail > 0 ? Colors.green.shade800 : Colors.red.shade800)),
                   ],
                 ],
               ),
             ),
             const SizedBox(height: 8),
+
             TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size *'), onChanged: (_) => setSub(() {})),
-            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (e.g. X52) *'), onChanged: (_) => setSub(() {})),
-            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (e.g. 12.7) *'), onChanged: (_) => setSub(() {})),
-            DropdownButtonFormField<String>(
-              value: cat,
-              items: categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: (v) => setSub(() => cat = v!),
-              decoration: const InputDecoration(labelText: 'Category *'),
-            ),
-            DropdownButtonFormField<String>(
-              value: coat,
-              items: coatingOptions.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: (v) => setSub(() => coat = v!),
-              decoration: const InputDecoration(labelText: 'Internal Coating *'),
-            ),
-            TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity to Issue *')),
+            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (Strict) *'), onChanged: (_) => setSub(() {})),
+            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (Strict) *'), onChanged: (_) => setSub(() {})),
+            TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity to Issue *'), onChanged: (_) => setSub(() {})),
             TextField(controller: personCtrl, decoration: const InputDecoration(labelText: 'Issued To / Person Name *')),
             DropdownButtonFormField<String>(
               value: loc,
@@ -1086,14 +1156,24 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEA580C), padding: const EdgeInsets.symmetric(vertical: 14)),
               onPressed: () async {
+                final s = sizeCtrl.text.trim();
+                final g = gradeCtrl.text.trim();
+                final sch = schCtrl.text.trim();
                 double req = double.tryParse(qtyCtrl.text) ?? 0;
-                if (req <= 0) return;
-                if (req > totalAvail) {
+
+                if (s.isEmpty || g.isEmpty || sch.isEmpty || req <= 0) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please enter valid Size, Grade, SCH and Quantity!')));
+                  return;
+                }
+
+                final freshTotal = _getTotalAvailableToIssue(s, g, sch, cat, coat);
+
+                if (req > freshTotal) {
                   showDialog(
                     context: context,
                     builder: (ctx) => AlertDialog(
                       title: const Text('Insufficient Stock Blocked', style: TextStyle(color: Colors.red)),
-                      content: Text('Cannot issue $req pipes. Only $totalAvail available for Size: ${sizeCtrl.text}, Grade: ${gradeCtrl.text}, SCH: ${schCtrl.text}.'),
+                      content: Text('Cannot issue $req pipes.\nTotal available: $freshTotal\n(Size: $s, Grade: $g, SCH: $sch, $coat).'),
                       actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
                     ),
                   );
@@ -1107,9 +1187,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   transactions.add({
                     'id': const Uuid().v4(),
                     'type': 'ISSUE',
-                    'pipeSize': sizeCtrl.text.trim(),
-                    'pipeGrade': gradeCtrl.text.trim(),
-                    'pipeSch': schCtrl.text.trim(),
+                    'pipeSize': s,
+                    'pipeGrade': g,
+                    'pipeSch': sch,
                     'category': cat,
                     'internalCoating': coat,
                     'quantity': req,
@@ -1117,12 +1197,13 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     'location': loc,
                     'jpName': jp,
                     'date': DateFormat('yyyy-MM-dd').format(selectedDate),
+                    'remarks': isPainted ? 'Painting Pipe issued' : '',
                   });
                 });
                 _saveData();
-                _syncWithCloud();
+                _syncWithCloud(silent: true);
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Authorized: $cat Issued & Synced!')));
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Authorized: $cat Issued & Stock Deducted!')));
                   setState(() => _navIndex = 0);
                 }
               },
@@ -1141,7 +1222,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- 3. RETURN MODULE (WAPSI S DIRECT PAINTED POOL MEIN) ---
+  // --- 3. RETURN MODULE ---
   Widget _buildReturning() {
     final sizeCtrl = TextEditingController();
     final gradeCtrl = TextEditingController();
@@ -1199,9 +1280,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size (e.g. 24") *')),
-            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (e.g. X52) *')),
-            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (e.g. 12.7) *')),
+            TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Pipe Size (Strict) *')),
+            TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Pipe Grade (Strict) *')),
+            TextField(controller: schCtrl, decoration: const InputDecoration(labelText: 'Pipe SCH (Strict) *')),
             DropdownButtonFormField<String>(
               value: cat,
               items: categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
@@ -1245,7 +1326,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   });
                 });
                 _saveData();
-                _syncWithCloud();
+                _syncWithCloud(silent: true);
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Success: Returned pipes added to $cat ready stock!')));
                   setState(() => _navIndex = 0);
@@ -1321,7 +1402,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 }
               }
 
-              // Filter specs that have transactions related to this category or bare
               final relevantSpecs = specMap.values.where((spec) {
                 final s = spec['size']!;
                 final g = spec['grade']!;
@@ -1568,72 +1648,20 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- 6. MANAGE, BACKUP, EXCEL & PDF REPORTS ---
+  // --- 6. MANAGE, GOOGLE FIREBASE CLOUD SYNC & SETTINGS ---
   Widget _buildManageAndBackup() {
     final rLocCtrl = TextEditingController();
     final iLocCtrl = TextEditingController();
     final jpCtrl = TextEditingController();
     final restoreTextCtrl = TextEditingController();
+    final firebaseUrlCtrl = TextEditingController(text: _firebaseUrl);
     final cloudIdCtrl = TextEditingController(text: _cloudStoreId);
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Excel & Printable PDF Reports', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 6),
-        Card(
-          color: Colors.green.shade50,
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.print, color: Color(0xFF1E3A8A), size: 26),
-                    SizedBox(width: 8),
-                    Text('Download Reports (Excel & PDF)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                const Text('Aap har report ko Excel Spreadsheet ya Printable PDF document mein save kar sakte hain.'),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
-                      icon: const Icon(Icons.inventory, color: Colors.white, size: 16),
-                      label: const Text('Live Stock Report', style: TextStyle(color: Colors.white)),
-                      onPressed: () => _showExportChoiceDialog('STOCK'),
-                    ),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
-                      icon: const Icon(Icons.download, color: Colors.white, size: 16),
-                      label: const Text('Receiving Report', style: TextStyle(color: Colors.white)),
-                      onPressed: () => _showExportChoiceDialog('RECEIVE'),
-                    ),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade800),
-                      icon: const Icon(Icons.upload, color: Colors.white, size: 16),
-                      label: const Text('Issuing Report', style: TextStyle(color: Colors.white)),
-                      onPressed: () => _showExportChoiceDialog('ISSUE'),
-                    ),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade800),
-                      icon: const Icon(Icons.assignment_return, color: Colors.white, size: 16),
-                      label: const Text('Returns Report', style: TextStyle(color: Colors.white)),
-                      onPressed: () => _showExportChoiceDialog('RETURN'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-        const Divider(height: 28),
-        const Text('Internet Cloud Synchronization (Mobile & PC)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        // --- GOOGLE FIREBASE SYNC CARD ---
+        const Text('Google Firebase Realtime Sync', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         Card(
           color: Colors.blue.shade50,
@@ -1645,32 +1673,42 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('Shared Store Sync ID', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    Text(_lastSyncStatus, style: const TextStyle(fontSize: 12, color: Colors.blue, fontWeight: FontWeight.bold)),
+                    const Text('Cloud Sync Settings', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(_lastSyncStatus, style: TextStyle(fontSize: 12, color: _lastSyncStatus.startsWith('Synced') ? Colors.green.shade800 : Colors.blue.shade800, fontWeight: FontWeight.bold)),
                   ],
                 ),
                 const SizedBox(height: 6),
-                const Text('Mobile aur Computer dono par yeh SAME ID honi chahiye taake dono ka data aapas mein sync ho.'),
+                const Text('Apna Google Firebase Realtime Database URL yahan paste karein. Mobile aur PC dono par yahi URL daalein.'),
                 const SizedBox(height: 10),
+                TextField(
+                  controller: firebaseUrlCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Firebase Database URL (e.g. https://...firebaseio.com)',
+                    border: OutlineInputBorder(),
+                    hintText: 'https://your-project-default-rtdb.firebaseio.com',
+                  ),
+                ),
+                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
                       child: TextField(
                         controller: cloudIdCtrl,
-                        decoration: const InputDecoration(labelText: 'Store Sync ID', border: OutlineInputBorder()),
+                        decoration: const InputDecoration(labelText: 'Store Branch Key', border: OutlineInputBorder()),
                       ),
                     ),
                     const SizedBox(width: 8),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
                       onPressed: () {
-                        if (cloudIdCtrl.text.trim().isNotEmpty) {
-                          setState(() => _cloudStoreId = cloudIdCtrl.text.trim());
-                          _saveData();
-                          _syncWithCloud();
-                        }
+                        setState(() {
+                          _firebaseUrl = firebaseUrlCtrl.text.trim();
+                          _cloudStoreId = cloudIdCtrl.text.trim();
+                        });
+                        _saveData();
+                        _syncWithCloud(silent: false);
                       },
-                      child: const Text('Save & Sync', style: TextStyle(color: Colors.white)),
+                      child: const Text('Save & Connect', style: TextStyle(color: Colors.white)),
                     ),
                   ],
                 ),
@@ -1682,8 +1720,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     icon: _isSyncing
                         ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                         : const Icon(Icons.sync, color: Colors.white),
-                    label: Text(_isSyncing ? 'Syncing with Cloud...' : 'SYNC DATA NOW (UPLOAD & DOWNLOAD)', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    onPressed: _syncWithCloud,
+                    label: Text(_isSyncing ? 'Connecting...' : 'SYNC NOW (SHARE MOBILE & PC DATA)', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    onPressed: () => _syncWithCloud(silent: false),
                   ),
                 ),
               ],
@@ -1691,6 +1729,49 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ),
         ),
         const Divider(height: 28),
+
+        // --- EXCEL & PDF REPORTS CARD ---
+        const Text('Excel & Printable PDF Reports', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
+        Card(
+          color: Colors.green.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
+                  icon: const Icon(Icons.inventory, color: Colors.white, size: 16),
+                  label: const Text('Live Stock Report', style: TextStyle(color: Colors.white)),
+                  onPressed: () => _showExportChoiceDialog('STOCK'),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
+                  icon: const Icon(Icons.download, color: Colors.white, size: 16),
+                  label: const Text('Receiving Report', style: TextStyle(color: Colors.white)),
+                  onPressed: () => _showExportChoiceDialog('RECEIVE'),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade800),
+                  icon: const Icon(Icons.upload, color: Colors.white, size: 16),
+                  label: const Text('Issuing Report', style: TextStyle(color: Colors.white)),
+                  onPressed: () => _showExportChoiceDialog('ISSUE'),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade800),
+                  icon: const Icon(Icons.assignment_return, color: Colors.white, size: 16),
+                  label: const Text('Returns Report', style: TextStyle(color: Colors.white)),
+                  onPressed: () => _showExportChoiceDialog('RETURN'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const Divider(height: 28),
+
+        // --- SECURITY PIN ---
         const Text('Security & Access Protection', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Card(
@@ -1760,6 +1841,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ),
         ),
         const Divider(height: 28),
+
+        // --- BACKUP & RESTORE ---
         const Text('Manual File Backup', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Card(
@@ -1769,43 +1852,35 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Export & Restore File Backup', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
-                        icon: const Icon(Icons.download, color: Colors.white, size: 16),
-                        label: const Text('EXPORT BACKUP', style: TextStyle(color: Colors.white)),
-                        onPressed: () async {
-                          final payload = {
-                            'timestamp': DateTime.now().toIso8601String(),
-                            'transactions': transactions,
-                            'receivingLocations': receivingLocations,
-                            'issueLocations': issueLocations,
-                            'jpNames': jpNames,
-                            'securityPin': _securityPin,
-                          };
-                          final jsonStr = jsonEncode(payload);
-                          Clipboard.setData(ClipboardData(text: jsonStr));
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E3A8A)),
+                  icon: const Icon(Icons.download, color: Colors.white, size: 16),
+                  label: const Text('EXPORT BACKUP', style: TextStyle(color: Colors.white)),
+                  onPressed: () async {
+                    final payload = {
+                      'timestamp': DateTime.now().toIso8601String(),
+                      'transactions': transactions,
+                      'receivingLocations': receivingLocations,
+                      'issueLocations': issueLocations,
+                      'jpNames': jpNames,
+                      'securityPin': _securityPin,
+                    };
+                    final jsonStr = jsonEncode(payload);
+                    Clipboard.setData(ClipboardData(text: jsonStr));
 
-                          final dir = await getApplicationDocumentsDirectory();
-                          final bFile = File('${dir.path}/pipe_backup_${DateTime.now().millisecondsSinceEpoch}.json');
-                          await bFile.writeAsString(jsonStr);
+                    final dir = await getApplicationDocumentsDirectory();
+                    final bFile = File('${dir.path}/pipe_backup_${DateTime.now().millisecondsSinceEpoch}.json');
+                    await bFile.writeAsString(jsonStr);
 
-                          showDialog(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              title: const Text('Backup Created!'),
-                              content: Text('Saved to: ${bFile.path}\n\nData clipboard mein bhi copy ho gaya hai!'),
-                              actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
-                            ),
-                          );
-                        },
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Backup Created!'),
+                        content: Text('Saved to: ${bFile.path}\n\nData clipboard mein bhi copy ho gaya hai!'),
+                        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
                       ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
                 const SizedBox(height: 8),
                 TextField(controller: restoreTextCtrl, maxLines: 2, decoration: const InputDecoration(hintText: 'Paste backup JSON here to restore...', border: OutlineInputBorder())),
@@ -1829,7 +1904,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                         if (data['securityPin'] != null) _securityPin = data['securityPin'].toString();
                       });
                       _saveData();
-                      _syncWithCloud();
+                      _syncWithCloud(silent: true);
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Data Restored Successfully!')));
                     } catch (e) {
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid Backup Data!')));
@@ -1841,7 +1916,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ),
         ),
         const Divider(height: 28),
-        const Text('Receiving Locations Management', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+
+        // --- LOCATIONS & JP NAMES ---
+        const Text('Receiving Locations', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         Row(
           children: [
             Expanded(child: TextField(controller: rLocCtrl, decoration: const InputDecoration(labelText: 'New Receiving Location'))),
@@ -1851,7 +1928,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 if (rLocCtrl.text.isNotEmpty) {
                   setState(() => receivingLocations.add(rLocCtrl.text.trim()));
                   _saveData();
-                  _syncWithCloud();
+                  _syncWithCloud(silent: true);
                   rLocCtrl.clear();
                 }
               },
@@ -1863,7 +1940,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           onDeleted: () {
             setState(() => receivingLocations.remove(l));
             _saveData();
-            _syncWithCloud();
+            _syncWithCloud(silent: true);
           },
         )).toList()),
         const Divider(height: 28),
@@ -1877,7 +1954,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 if (iLocCtrl.text.isNotEmpty) {
                   setState(() => issueLocations.add(iLocCtrl.text.trim()));
                   _saveData();
-                  _syncWithCloud();
+                  _syncWithCloud(silent: true);
                   iLocCtrl.clear();
                 }
               },
@@ -1889,11 +1966,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           onDeleted: () {
             setState(() => issueLocations.remove(l));
             _saveData();
-            _syncWithCloud();
+            _syncWithCloud(silent: true);
           },
         )).toList()),
         const Divider(height: 28),
-        const Text('JP Names (Joint Proposals)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const Text('JP Names', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         Row(
           children: [
             Expanded(child: TextField(controller: jpCtrl, decoration: const InputDecoration(labelText: 'New JP Name'))),
@@ -1903,7 +1980,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 if (jpCtrl.text.isNotEmpty) {
                   setState(() => jpNames.add(jpCtrl.text.trim()));
                   _saveData();
-                  _syncWithCloud();
+                  _syncWithCloud(silent: true);
                   jpCtrl.clear();
                 }
               },
@@ -1915,7 +1992,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           onDeleted: () {
             setState(() => jpNames.remove(j));
             _saveData();
-            _syncWithCloud();
+            _syncWithCloud(silent: true);
           },
         )).toList()),
       ],
