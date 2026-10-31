@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'package:excel/excel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -108,8 +107,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   Future<void> _saveData() async {
     try {
       final file = await _getFile();
-      final payload = {
-        'version': '4.2',
+      await file.writeAsString(jsonEncode({
+        'version': '4.3',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
@@ -121,12 +120,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         'securityPin': _securityPin,
         'firebaseUrl': _firebaseUrl,
         'cloudStoreId': _cloudStoreId,
-      };
-      await file.writeAsString(jsonEncode(payload));
+      }));
     } catch (_) {}
   }
 
-  // Auto Daily Backup (Point 8)
   Future<void> _checkAndRunDailyAutoBackup() async {
     try {
       final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
@@ -156,7 +153,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         _norm(t['internalCoating']) == _norm(coat);
   }
 
-  // Stock Calculation Engine with Meters & Smart Painted Deduction
   Map<String, Map<String, double>> _calculateSpecStocks(String size, String grade, String schOrClass, String coating) {
     final Map<String, Map<String, double>> stocks = {
       for (var c in categories) c: {'qty': 0.0, 'meters': 0.0}
@@ -248,7 +244,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return list;
   }
 
-  // Real Excel (.XLSX) & Corporate PDF Generator (Point 2 & 3)
   Future<void> _exportDocument({required String reportType, required String format, List<Map<String, dynamic>>? customList}) async {
     final nowStr = DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now());
     final printDate = DateFormat('yyyy-MM-dd hh:mm a').format(DateTime.now());
@@ -256,16 +251,14 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     final dir = await getApplicationDocumentsDirectory();
 
     if (!isPdf) {
-      var excel = Excel.createExcel();
-      Sheet sheet = excel[excel.getDefaultSheet() ?? 'Sheet1'];
-      excel.rename(excel.getDefaultSheet() ?? 'Sheet1', 'SOFS_Inventory');
+      final StringBuffer excel = StringBuffer();
+      excel.write('\uFEFF');
+      excel.writeln('SAARI OIL FIELD SERVICES PIPE LINE');
+      excel.writeln('Material Inventory Report - $reportType');
+      excel.writeln('Date: $printDate\n');
 
       if (reportType == 'STOCK') {
-        sheet.appendRow([
-          TextCellValue('Category'), TextCellValue('Size'), TextCellValue('Grade'),
-          TextCellValue('SCH / Class'), TextCellValue('Coating'), TextCellValue('In-Store Qty (Pcs)'),
-          TextCellValue('Total Length (Meters)'), TextCellValue('Stock Status')
-        ]);
+        excel.writeln('Category,Size,Grade,SCH / Class,Coating,In-Store Balance Qty (Pcs),Length (Meters),Stock Nature');
         for (var cat in categories) {
           final specMap = <String, Map<String, String>>{};
           for (var t in transactions) {
@@ -281,54 +274,38 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               double meters = _getPhysicalStockMeters(s, g, sch, cat, coat);
               if (qty > 0 || meters > 0) {
                 String note = (cat == 'Painting Pipe' || cat == 'Painting Bend') ? 'Ready in Yard' : 'Physical Stock';
-                sheet.appendRow([
-                  TextCellValue(cat), TextCellValue(s), TextCellValue(g), TextCellValue(sch),
-                  TextCellValue(coat), TextCellValue(qty.toString()), TextCellValue(meters > 0 ? meters.toString() : '-'),
-                  TextCellValue(note)
-                ]);
+                excel.writeln('"$cat","$s","$g","$sch","$coat",$qty,${meters > 0 ? meters : "-"},"$note"');
               }
             }
           }
         }
       } else {
         final list = customList ?? transactions;
-        sheet.appendRow([
-          TextCellValue('Type'), TextCellValue('Date'), TextCellValue('Category'), TextCellValue('Size'),
-          TextCellValue('Grade'), TextCellValue('SCH / Class'), TextCellValue('Coating'), TextCellValue('Quantity (Pcs)'),
-          TextCellValue('Length (Meters)'), TextCellValue('Location / Person'), TextCellValue('JP Name'), TextCellValue('Remarks')
-        ]);
+        excel.writeln('Type,Date,Category,Size,Grade,SCH / Class,Coating,Quantity (Pcs),Length (Meters),Location / Person,JP Name,Remarks');
         for (var t in list) {
           if (reportType == 'RECEIVE' && t['type'] != 'RECEIVE') continue;
           if (reportType == 'ISSUE' && t['type'] != 'ISSUE') continue;
           if (reportType == 'RETURN' && t['type'] != 'RETURN') continue;
 
-          sheet.appendRow([
-            TextCellValue(t['type'] ?? ''), TextCellValue(t['date'] ?? ''), TextCellValue(t['category'] ?? ''),
-            TextCellValue(t['pipeSize'] ?? ''), TextCellValue(t['pipeGrade'] ?? ''), TextCellValue(t['pipeSch'] ?? t['itemClass'] ?? ''),
-            TextCellValue(t['internalCoating'] ?? ''), TextCellValue((t['quantity'] ?? 0).toString()),
-            TextCellValue((t['lengthMeters'] ?? 0) > 0 ? (t['lengthMeters']).toString() : '-'),
-            TextCellValue(t['entity'] ?? t['location'] ?? ''), TextCellValue(t['jpName'] ?? ''), TextCellValue(t['remarks'] ?? '')
-          ]);
+          excel.writeln('"${t['type'] ?? ''}","${t['date'] ?? ''}","${t['category'] ?? ''}","${t['pipeSize'] ?? ''}","${t['pipeGrade'] ?? ''}","${t['pipeSch'] ?? t['itemClass'] ?? ''}","${t['internalCoating'] ?? ''}",${t['quantity'] ?? 0},${(t['lengthMeters'] ?? 0) > 0 ? t['lengthMeters'] : "-"},"${(t['entity'] ?? t['location'] ?? '').toString().replaceAll('"', '""')}","${(t['jpName'] ?? '').toString().replaceAll('"', '""')}","${(t['remarks'] ?? '').toString().replaceAll('"', '""')}"');
         }
       }
 
-      final fileBytes = excel.save();
-      final fileName = 'SOFS_${reportType}_$nowStr.xlsx';
+      final fileName = 'SOFS_${reportType}_$nowStr.csv';
       final file = File('${dir.path}/$fileName');
-      if (fileBytes != null) await file.writeAsBytes(fileBytes);
+      await file.writeAsString(excel.toString());
 
       if (mounted) {
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Row(children: [Icon(Icons.table_chart, color: Colors.green), SizedBox(width: 8), Text('Excel (.XLSX) Exported!')]),
-            content: Text('File saved:\n${file.path}\n\nYeh file asli Microsoft Excel (.xlsx) format mein save ho gayi hai.'),
+            title: const Row(children: [Icon(Icons.table_chart, color: Colors.green), SizedBox(width: 8), Text('Excel Worksheet Ready!')]),
+            content: Text('File saved:\n${file.path}\n\nYeh file direct Microsoft Excel, Google Sheets, aur WPS mein columns ke sath khulegi.'),
             actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
           ),
         );
       }
     } else {
-      // PDF HTML Generator
       final StringBuffer html = StringBuffer();
       html.writeln('''<!DOCTYPE html><html><head><meta charset="utf-8">
       <title>SOFS - Material Report</title>
@@ -410,8 +387,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         actions: [
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
-            icon: const Icon(Icons.table_chart, color: Colors.white, size: 16),
-            label: const Text('Excel (.XLSX)', style: TextStyle(color: Colors.white)),
+            icon: const Icon(Icons.table_chart, color: Colors.white, size: 18),
+            label: const Text('Excel Sheet', style: TextStyle(color: Colors.white)),
             onPressed: () {
               Navigator.pop(ctx);
               _exportDocument(reportType: reportType, format: 'EXCEL', customList: customList);
@@ -419,7 +396,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade800),
-            icon: const Icon(Icons.picture_as_pdf, color: Colors.white, size: 16),
+            icon: const Icon(Icons.picture_as_pdf, color: Colors.white, size: 18),
             label: const Text('Printable PDF', style: TextStyle(color: Colors.white)),
             onPressed: () {
               Navigator.pop(ctx);
@@ -431,7 +408,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Cloud Sync
   Future<void> _syncWithCloud({bool silent = false}) async {
     if (_isSyncing) return;
     if (_firebaseUrl.trim().isEmpty) {
@@ -522,7 +498,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return pinResult ?? false;
   }
 
-  // Edit (Point 4)
   void _editTransactionById(String id) async {
     final index = transactions.indexWhere((item) => item['id'] == id);
     if (index == -1) return;
@@ -605,7 +580,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Delete (Point 4)
   void _deleteTransactionById(String id) async {
     if (!await _authenticateAction('Delete Record')) return;
     if (!mounted) return;
@@ -633,7 +607,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Bulk Rename (Point 6)
   void _renameLocationOrJpDialog({required bool isLocation, required String oldName}) {
     final newCtrl = TextEditingController(text: oldName);
     bool cascade = true;
@@ -646,7 +619,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextField(controller: newCtrl, decoration: InputDecoration(labelText: 'New Name')),
+              TextField(controller: newCtrl, decoration: const InputDecoration(labelText: 'New Name')),
               const SizedBox(height: 8),
               CheckboxListTile(
                 contentPadding: EdgeInsets.zero,
@@ -700,7 +673,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Official Monogram (Point 1 & 10)
   Widget _buildOfficialMonogram() {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -852,7 +824,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           return Card(
             margin: const EdgeInsets.only(top: 6),
             child: ListTile(
-              leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), child: Icon(icon, color: color, size: 20)),
+              leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), radius: 20, child: Icon(icon, color: color, size: 20)),
               title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
               subtitle: Text('Grade: ${t['pipeGrade']} | SCH/Class: ${t['pipeSch'] ?? t['itemClass'] ?? ''}\nQty: ${t['quantity']} Pcs$meters | Date: ${t['date']}'),
               trailing: Chip(label: Text(t['type'], style: const TextStyle(color: Colors.white, fontSize: 9)), backgroundColor: color),
@@ -863,7 +835,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Unified Clean Transaction Form for Receive, Issue, & Return
   Widget _buildTransactionForm(String type) {
     final isReceive = type == 'RECEIVE';
     final isIssue = type == 'ISSUE';
@@ -1071,7 +1042,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Stock Screen (Point 1, 2, 3)
   Widget _buildStock() {
     return Column(
       children: [
@@ -1167,7 +1137,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // History with Category Breakdown (Point 5)
   Widget _buildHistory() {
     final filtered = transactions.where((t) {
       if (_historyTypeFilter == 'RECEIVE' && t['type'] != 'RECEIVE') return false;
@@ -1229,7 +1198,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ),
         ),
 
-        // Live Category Breakdown (Point 5)
         if (summaryTotals.isNotEmpty)
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -1293,7 +1261,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Settings & Management (Points 6, 7, 8, 9)
   Widget _buildManageAndBackup() {
     final rLocCtrl = TextEditingController();
     final iLocCtrl = TextEditingController();
@@ -1311,7 +1278,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ]),
         const SizedBox(height: 6),
 
-        // Category Priority Pinning (Point 2)
         Card(
           color: Colors.amber.shade50,
           child: Padding(
@@ -1344,7 +1310,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // Firebase Sync
         Card(
           color: Colors.blue.shade50,
           child: Padding(
@@ -1367,7 +1332,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // PIN Security
         Card(
           color: Colors.amber.shade50,
           child: Padding(
@@ -1394,7 +1358,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // Backup
         const Text('Backup & Data Protection', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         Card(
@@ -1443,7 +1406,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // Locations & JPs (Pin ⭐ & Bulk Rename)
         const Text('Receiving Locations (Pin ⭐ / Edit)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
         Row(children: [
           Expanded(child: TextField(controller: rLocCtrl, decoration: const InputDecoration(labelText: 'New Location'))),
