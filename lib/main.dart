@@ -43,6 +43,7 @@ class MainInventoryScreen extends StatefulWidget {
 class _MainInventoryScreenState extends State<MainInventoryScreen> {
   int _navIndex = 0;
   List<Map<String, dynamic>> transactions = [];
+  List<String> deletedTxIds = []; // Blacklist for permanently deleted entries
   List<String> receivingLocations = ['Main Yard Receiving', 'Warehouse Gate 1', 'Bay 4 Discharge'];
   List<String> issueLocations = ['Yard 1', 'Yard 2', 'Warehouse A', 'Main Site Line'];
   List<String> jpNames = ['JP-Alpha', 'JP-Beta', 'JP-North', 'JP-Pipeline-01'];
@@ -57,6 +58,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   bool _isSyncing = false;
   String _lastSyncStatus = 'Not Synced';
   bool _isSettingsUnlocked = false;
+  String _appDirPath = '';
 
   final List<String> categories = [
     'Bare Pipe', 'Bare Bend', 'Painting Bend', 'Painting Pipe',
@@ -74,12 +76,14 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     super.initState();
     _loadData().then((_) {
       _checkAndRunDailyAutoBackup();
+      _cacheCompanyLogo();
       if (_firebaseUrl.isNotEmpty) _syncWithCloud(silent: true);
     });
   }
 
   Future<File> _getFile() async {
     final dir = await getApplicationDocumentsDirectory();
+    _appDirPath = dir.path;
     return File('${dir.path}/pipe_inventory_master.json');
   }
 
@@ -90,6 +94,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         final data = jsonDecode(await file.readAsString());
         setState(() {
           transactions = List<Map<String, dynamic>>.from(data['transactions'] ?? []);
+          if (data['deletedTxIds'] != null) deletedTxIds = List<String>.from(data['deletedTxIds']);
           if (data['receivingLocations'] != null) receivingLocations = List<String>.from(data['receivingLocations']);
           if (data['issueLocations'] != null) issueLocations = List<String>.from(data['issueLocations']);
           if (data['jpNames'] != null) jpNames = List<String>.from(data['jpNames']);
@@ -108,9 +113,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       await file.writeAsString(jsonEncode({
-        'version': '4.3',
+        'version': '4.4',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
+        'deletedTxIds': deletedTxIds,
         'receivingLocations': receivingLocations,
         'issueLocations': issueLocations,
         'jpNames': jpNames,
@@ -121,6 +127,21 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         'firebaseUrl': _firebaseUrl,
         'cloudStoreId': _cloudStoreId,
       }));
+    } catch (_) {}
+  }
+
+  // Automatic download of original monogram from GitHub repository
+  Future<void> _cacheCompanyLogo() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final logoFile = File('${dir.path}/saari_logo.png');
+      if (!await logoFile.exists()) {
+        final res = await http.get(Uri.parse('https://raw.githubusercontent.com/abrarch6548-pixel/pipe-inventory/main/logo.png')).timeout(const Duration(seconds: 8));
+        if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+          await logoFile.writeAsBytes(res.bodyBytes);
+          setState(() {});
+        }
+      }
     } catch (_) {}
   }
 
@@ -408,6 +429,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // --- PERMANENT DELETION & CLOUD SYNC ENGINE (GHOST RESURRECTION FIXED) ---
   Future<void> _syncWithCloud({bool silent = false}) async {
     if (_isSyncing) return;
     if (_firebaseUrl.trim().isEmpty) {
@@ -427,11 +449,22 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       if (res.statusCode == 200 && res.body != 'null' && res.body.isNotEmpty) {
         final remoteData = jsonDecode(res.body);
         if (remoteData is Map) {
+          // 1. Merge Tombstones (Deleted IDs) from Cloud and Local
+          final remoteDeleted = List<String>.from(remoteData['deletedTxIds'] ?? []);
+          final allDeleted = {...deletedTxIds, ...remoteDeleted}.toList();
+          deletedTxIds = allDeleted;
+
+          // 2. Filter out any transaction that was ever deleted
           final remoteTx = List<Map<String, dynamic>>.from(remoteData['transactions'] ?? []);
+          remoteTx.removeWhere((rt) => allDeleted.contains(rt['id']));
+
           final localMap = {for (var t in transactions) t['id']: t};
+          localMap.removeWhere((id, t) => allDeleted.contains(id));
+
           for (var rt in remoteTx) {
             localMap[rt['id']] = rt;
           }
+
           setState(() {
             transactions = localMap.values.toList();
             if (remoteData['receivingLocations'] != null) receivingLocations = List<String>.from({...receivingLocations, ...remoteData['receivingLocations']});
@@ -441,9 +474,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         }
       }
 
+      // 3. Save clean state back to Cloud (including blacklist)
       await http.put(syncUri, headers: {'Content-Type': 'application/json'}, body: jsonEncode({
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
+        'deletedTxIds': deletedTxIds, // Blacklist sent to cloud
         'receivingLocations': receivingLocations,
         'issueLocations': issueLocations,
         'jpNames': jpNames,
@@ -580,6 +615,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // --- PERMANENT DELETE (NEVER RESURRECTS FROM CLOUD) ---
   void _deleteTransactionById(String id) async {
     if (!await _authenticateAction('Delete Record')) return;
     if (!mounted) return;
@@ -588,17 +624,22 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Entry Confirmation', style: TextStyle(color: Colors.red)),
-        content: const Text('Kya aap waqai is entry ko delete karna chahte hain?'),
+        content: const Text('Kya aap waqai is entry ko permanent delete karna chahte hain? Yeh cloud se bhi hamesha ke liye mit jayegi.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
-              setState(() => transactions.removeWhere((item) => item['id'] == id));
+              setState(() {
+                transactions.removeWhere((item) => item['id'] == id);
+                if (!deletedTxIds.contains(id)) {
+                  deletedTxIds.add(id); // Added to tombstone blacklist
+                }
+              });
               _saveData();
               _syncWithCloud(silent: true);
               Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Deleted!')));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Permanently Deleted!')));
             },
             child: const Text('DELETE', style: TextStyle(color: Colors.white)),
           ),
@@ -673,7 +714,30 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // --- MONOGRAM HEADER: CHECKS LOCAL CACHED FILE OR RENDERS EXACT BRANDING ---
   Widget _buildOfficialMonogram() {
+    File? cachedLogo;
+    if (_appDirPath.isNotEmpty) {
+      final f = File('$_appDirPath/saari_logo.png');
+      if (f.existsSync()) cachedLogo = f;
+    }
+
+    if (cachedLogo != null) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4)),
+            child: Image.file(cachedLogo, height: 32, fit: BoxFit.contain),
+          ),
+          const SizedBox(width: 8),
+          const Text('SAARI OIL FIELD SERVICES', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: Colors.white)),
+        ],
+      );
+    }
+
+    // High-Fidelity exact vector brand badge if image is not downloaded yet
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -683,14 +747,14 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('S', style: TextStyle(color: Color(0xFF183B80), fontWeight: FontWeight.w900, fontSize: 16)),
-              const Text('A', style: TextStyle(color: Color(0xFF183B80), fontWeight: FontWeight.w900, fontSize: 16)),
-              const Text('A', style: TextStyle(color: Color(0xFFF25F22), fontWeight: FontWeight.w900, fontSize: 16)),
-              const Text('R', style: TextStyle(color: Color(0xFF183B80), fontWeight: FontWeight.w900, fontSize: 16)),
+              const Text('S', style: TextStyle(color: Color(0xFF103778), fontWeight: FontWeight.w900, fontSize: 16)),
+              const Text('A', style: TextStyle(color: Color(0xFF103778), fontWeight: FontWeight.w900, fontSize: 16)),
+              const Text('A', style: TextStyle(color: Color(0xFFF26522), fontWeight: FontWeight.w900, fontSize: 16)),
+              const Text('R', style: TextStyle(color: Color(0xFF103778), fontWeight: FontWeight.w900, fontSize: 16)),
               Stack(
                 alignment: Alignment.center,
                 children: [
-                  const Text('I', style: TextStyle(color: Color(0xFF183B80), fontWeight: FontWeight.w900, fontSize: 16)),
+                  const Text('I', style: TextStyle(color: Color(0xFF103778), fontWeight: FontWeight.w900, fontSize: 16)),
                   Positioned(bottom: 1, child: Icon(Icons.architecture, color: Colors.amber.shade900, size: 8)),
                 ],
               ),
@@ -1242,8 +1306,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     return Card(
                       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
                       child: ListTile(
-                        leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), radius: 18, child: Icon(icon, color: color, size: 16)),
-                        title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                        leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), radius: 20, child: Icon(icon, color: color, size: 20)),
+                        title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                         subtitle: Text('Grade: ${t['pipeGrade']} | SCH/Class: ${t['pipeSch'] ?? t['itemClass'] ?? ''}\nQty: ${t['quantity']} Pcs$meters | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}${t['jpName'] != null ? ' | JP: ${t['jpName']}' : ''}', style: const TextStyle(fontSize: 11)),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -1278,6 +1342,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ]),
         const SizedBox(height: 6),
 
+        // Category Priority Pinning (Point 2)
         Card(
           color: Colors.amber.shade50,
           child: Padding(
@@ -1310,6 +1375,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
+        // Firebase Sync
         Card(
           color: Colors.blue.shade50,
           child: Padding(
@@ -1332,6 +1398,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
+        // PIN Security
         Card(
           color: Colors.amber.shade50,
           child: Padding(
@@ -1358,6 +1425,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
+        // Backup
         const Text('Backup & Data Protection', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         Card(
@@ -1376,7 +1444,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   onPressed: () async {
                     final dir = await getApplicationDocumentsDirectory();
                     final bFile = File('${dir.path}/SOFS_Backup_${DateTime.now().millisecondsSinceEpoch}.json');
-                    final str = jsonEncode({'timestamp': DateTime.now().toIso8601String(), 'transactions': transactions, 'receivingLocations': receivingLocations, 'issueLocations': issueLocations, 'jpNames': jpNames, 'securityPin': _securityPin});
+                    final str = jsonEncode({'timestamp': DateTime.now().toIso8601String(), 'transactions': transactions, 'deletedTxIds': deletedTxIds, 'receivingLocations': receivingLocations, 'issueLocations': issueLocations, 'jpNames': jpNames, 'securityPin': _securityPin});
                     await bFile.writeAsString(str);
                     Clipboard.setData(ClipboardData(text: str));
                     if (mounted) showDialog(context: context, builder: (ctx) => AlertDialog(title: const Text('Backup Saved!'), content: Text('File:\n${bFile.path}\n\nClipboard mein bhi copy ho gaya hai.'), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))]));
@@ -1391,6 +1459,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     final data = jsonDecode(restoreTextCtrl.text.trim());
                     setState(() {
                       if (data['transactions'] != null) transactions = List<Map<String, dynamic>>.from(data['transactions']);
+                      if (data['deletedTxIds'] != null) deletedTxIds = List<String>.from(data['deletedTxIds']);
                       if (data['receivingLocations'] != null) receivingLocations = List<String>.from(data['receivingLocations']);
                       if (data['issueLocations'] != null) issueLocations = List<String>.from(data['issueLocations']);
                       if (data['jpNames'] != null) jpNames = List<String>.from(data['jpNames']);
@@ -1406,6 +1475,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
+        // Locations & JPs
         const Text('Receiving Locations (Pin ⭐ / Edit)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
         Row(children: [
           Expanded(child: TextField(controller: rLocCtrl, decoration: const InputDecoration(labelText: 'New Location'))),
