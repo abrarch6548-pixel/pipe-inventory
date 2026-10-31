@@ -1,3 +1,7 @@
+// ==========================================
+// PART 1 (Start se yahan tak copy karein)
+// ==========================================
+
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -44,8 +48,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   int _navIndex = 0;
   List<Map<String, dynamic>> transactions = [];
   List<String> deletedTxIds = [];
-  
-  // Point 1: Tombstone lists for deleted locations & JPs so cloud doesn't bring them back
+
+  // Recycle Bin & Edit Audit Logs
+  List<Map<String, dynamic>> recycleBin = [];
+  List<Map<String, dynamic>> editAuditLogs = [];
+
+  // Tombstone lists for deleted locations & JPs
   List<String> deletedLocations = [];
   List<String> deletedJpNames = [];
 
@@ -75,11 +83,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   String _stockSearchQuery = '';
   String _historySearchQuery = '';
   String _historyTypeFilter = 'ALL';
-
-  // Point 2: History Coating Filter state
   String _historyCoatingFilter = 'ALL';
 
-  // Date Range Filter & Highlight states
   DateTime? _historyStartDate;
   DateTime? _historyEndDate;
   String? _highlightedTxId;
@@ -108,6 +113,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         setState(() {
           transactions = List<Map<String, dynamic>>.from(data['transactions'] ?? []);
           if (data['deletedTxIds'] != null) deletedTxIds = List<String>.from(data['deletedTxIds']);
+          if (data['recycleBin'] != null) recycleBin = List<Map<String, dynamic>>.from(data['recycleBin']);
+          if (data['editAuditLogs'] != null) editAuditLogs = List<Map<String, dynamic>>.from(data['editAuditLogs']);
           if (data['deletedLocations'] != null) deletedLocations = List<String>.from(data['deletedLocations']);
           if (data['deletedJpNames'] != null) deletedJpNames = List<String>.from(data['deletedJpNames']);
           if (data['receivingLocations'] != null) receivingLocations = List<String>.from(data['receivingLocations']);
@@ -120,7 +127,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           if (data['firebaseUrl'] != null) _firebaseUrl = data['firebaseUrl'].toString();
           if (data['cloudStoreId'] != null) _cloudStoreId = data['cloudStoreId'].toString();
 
-          // Strip any previously deleted items that might have lingered
           receivingLocations.removeWhere((l) => deletedLocations.contains(l));
           issueLocations.removeWhere((l) => deletedLocations.contains(l));
           jpNames.removeWhere((j) => deletedJpNames.contains(j));
@@ -133,10 +139,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       await file.writeAsString(jsonEncode({
-        'version': '4.6',
+        'version': '5.0',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'deletedTxIds': deletedTxIds,
+        'recycleBin': recycleBin,
+        'editAuditLogs': editAuditLogs,
         'deletedLocations': deletedLocations,
         'deletedJpNames': deletedJpNames,
         'receivingLocations': receivingLocations,
@@ -178,6 +186,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           'backupDate': todayStr,
           'createdAt': DateTime.now().toIso8601String(),
           'transactions': transactions,
+          'recycleBin': recycleBin,
+          'editAuditLogs': editAuditLogs,
           'receivingLocations': receivingLocations,
           'issueLocations': issueLocations,
           'jpNames': jpNames,
@@ -342,7 +352,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Row(children: [Icon(Icons.table_chart, color: Colors.green), SizedBox(width: 8), Text('Excel Worksheet Ready!')]),
-            content: Text('File saved:\n${file.path}\n\nYeh file direct Microsoft Excel, Google Sheets, aur WPS mein columns ke sath khulegi.'),
+            content: Text('File saved:\n${file.path}\n\nMicrosoft Excel ya WPS Office mein open karein.'),
             actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
           ),
         );
@@ -412,7 +422,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Row(children: [Icon(Icons.picture_as_pdf, color: Colors.red), SizedBox(width: 8), Text('Printable PDF Ready!')]),
-            content: Text('File saved:\n${file.path}\n\nBrowser mein open kar ke "Save as PDF" ya print kar sakte hain.'),
+            content: Text('File saved:\n${file.path}\n\nBrowser mein open kar ke "Save as PDF" ya print karein.'),
             actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
           ),
         );
@@ -450,7 +460,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Point 1 & 3: Robust Cloud Sync - Never overwrites fresh local edits & respects deleted master data
   Future<void> _syncWithCloud({bool silent = false}) async {
     if (_isSyncing) return;
     if (_firebaseUrl.trim().isEmpty) {
@@ -470,19 +479,16 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       if (res.statusCode == 200 && res.body != 'null' && res.body.isNotEmpty) {
         final remoteData = jsonDecode(res.body);
         if (remoteData is Map) {
-          // Sync Deleted IDs
           final remoteDeleted = List<String>.from(remoteData['deletedTxIds'] ?? []);
           final allDeleted = {...deletedTxIds, ...remoteDeleted}.toList();
           deletedTxIds = allDeleted;
 
-          // Point 1: Sync Deleted Locations & JPs so they NEVER come back
           final remoteDeletedLocs = List<String>.from(remoteData['deletedLocations'] ?? []);
           deletedLocations = {...deletedLocations, ...remoteDeletedLocs}.toList();
 
           final remoteDeletedJps = List<String>.from(remoteData['deletedJpNames'] ?? []);
           deletedJpNames = {...deletedJpNames, ...remoteDeletedJps}.toList();
 
-          // Sync Transactions by Timestamp (Prevents remote from overwriting newly edited local records!)
           final remoteTx = List<Map<String, dynamic>>.from(remoteData['transactions'] ?? []);
           remoteTx.removeWhere((rt) => allDeleted.contains(rt['id']));
 
@@ -494,7 +500,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             if (!localMap.containsKey(id)) {
               localMap[id] = rt;
             } else {
-              // Point 3: Compare timestamps - Local edit wins if local is newer or equal!
               final localTime = DateTime.tryParse(localMap[id]!['updatedAt'] ?? '') ?? DateTime(2000);
               final remoteTime = DateTime.tryParse(rt['updatedAt'] ?? '') ?? DateTime(2000);
               if (remoteTime.isAfter(localTime)) {
@@ -503,7 +508,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             }
           }
 
-          // Point 1: Clean location & JP lists by filtering out deleted ones
           List<String> combinedRec = {...receivingLocations, ...List<String>.from(remoteData['receivingLocations'] ?? [])}.toList();
           combinedRec.removeWhere((l) => deletedLocations.contains(l));
 
@@ -522,7 +526,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         }
       }
 
-      // Push updated state to Firebase
       await http.put(syncUri, headers: {'Content-Type': 'application/json'}, body: jsonEncode({
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
@@ -583,7 +586,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return pinResult ?? false;
   }
 
-  // Point 3: Complete & Working Edit for all entry types (Receive, Issue, Return)
+  // Edit Transaction with Auto Audit Trail (Before vs After Record)
   void _editTransactionById(String id) async {
     final index = transactions.indexWhere((item) => item['id'] == id);
     if (index == -1) return;
@@ -600,8 +603,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     final qtyCtrl = TextEditingController(text: t['quantity']?.toString() ?? '1');
     final metersCtrl = TextEditingController(text: (t['lengthMeters'] ?? 0) > 0 ? t['lengthMeters'].toString() : '');
     final remarksCtrl = TextEditingController(text: t['remarks'] ?? '');
-    
-    // Proper controllers for Location / Person / Destination
+
     final personCtrl = TextEditingController(text: isReceive ? '' : (t['entity'] ?? ''));
     String rLoc = isReceive ? (t['entity'] ?? (receivingLocations.isNotEmpty ? receivingLocations.first : 'Yard')) : '';
     String iLoc = isIssue ? (t['location'] ?? (issueLocations.isNotEmpty ? issueLocations.first : 'Yard 1')) : '';
@@ -652,8 +654,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 ),
                 TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity (Pcs)')),
                 if (cat == 'Cut Piece') TextField(controller: metersCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Meters (Length)')),
-                
-                // Specific Fields for Receive vs Issue vs Return
+
                 if (isReceive) ...[
                   const SizedBox(height: 6),
                   DropdownButtonFormField<String>(
@@ -698,31 +699,73 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   return;
                 }
 
+                final oldTx = Map<String, dynamic>.from(transactions[index]);
+                final newTx = {
+                  ...transactions[index],
+                  'date': DateFormat('yyyy-MM-dd').format(editDate),
+                  'category': cat,
+                  'pipeSize': sizeCtrl.text.trim(),
+                  'pipeGrade': gradeCtrl.text.trim(),
+                  'pipeSch': schCtrl.text.trim(),
+                  'itemClass': (cat == 'Elbow' || cat == 'Flange') ? schCtrl.text.trim() : '',
+                  'internalCoating': coat,
+                  'quantity': newQty,
+                  'lengthMeters': double.tryParse(metersCtrl.text) ?? 0.0,
+                  'entity': isReceive ? rLoc : personCtrl.text.trim(),
+                  'location': isIssue ? iLoc : '',
+                  'jpName': isIssue ? jName : '',
+                  'remarks': remarksCtrl.text.trim(),
+                  'updatedAt': DateTime.now().toIso8601String(),
+                };
+
+                final List<Map<String, String>> diffs = [];
+                final keys = [
+                  {'k': 'category', 'l': 'Category'},
+                  {'k': 'pipeSize', 'l': 'Size'},
+                  {'k': 'pipeGrade', 'l': 'Grade'},
+                  {'k': 'pipeSch', 'l': 'SCH / Class'},
+                  {'k': 'internalCoating', 'l': 'Coating'},
+                  {'k': 'quantity', 'l': 'Quantity'},
+                  {'k': 'lengthMeters', 'l': 'Meters'},
+                  {'k': 'entity', 'l': isReceive ? 'Location' : 'Person'},
+                  {'k': 'location', 'l': 'Destination'},
+                  {'k': 'jpName', 'l': 'JP Name'},
+                  {'k': 'date', 'l': 'Date'},
+                  {'k': 'remarks', 'l': 'Remarks'},
+                ];
+
+                for (var f in keys) {
+                  final k = f['k']!;
+                  final l = f['l']!;
+                  final ov = (oldTx[k] ?? '').toString().trim();
+                  final nv = (newTx[k] ?? '').toString().trim();
+                  if (ov != nv) {
+                    diffs.add({'field': l, 'old': ov.isEmpty ? '-' : ov, 'new': nv.isEmpty ? '-' : nv});
+                  }
+                }
+
                 setState(() {
-                  transactions[index] = {
-                    ...transactions[index],
-                    'date': DateFormat('yyyy-MM-dd').format(editDate),
-                    'category': cat,
-                    'pipeSize': sizeCtrl.text.trim(),
-                    'pipeGrade': gradeCtrl.text.trim(),
-                    'pipeSch': schCtrl.text.trim(),
-                    'itemClass': (cat == 'Elbow' || cat == 'Flange') ? schCtrl.text.trim() : '',
-                    'internalCoating': coat,
-                    'quantity': newQty,
-                    'lengthMeters': double.tryParse(metersCtrl.text) ?? 0.0,
-                    'entity': isReceive ? rLoc : personCtrl.text.trim(),
-                    'location': isIssue ? iLoc : '',
-                    'jpName': isIssue ? jName : '',
-                    'remarks': remarksCtrl.text.trim(),
-                    // Point 3: Fresh timestamp prevents cloud sync from overwriting this edit!
-                    'updatedAt': DateTime.now().toIso8601String(),
-                  };
+                  transactions[index] = newTx;
+                  if (diffs.isNotEmpty) {
+                    editAuditLogs.insert(0, {
+                      'id': const Uuid().v4(),
+                      'txId': id,
+                      'type': type,
+                      'category': cat,
+                      'size': sizeCtrl.text.trim(),
+                      'grade': gradeCtrl.text.trim(),
+                      'editedAt': DateTime.now().toIso8601String(),
+                      'changes': diffs,
+                      'oldSnapshot': oldTx,
+                      'newSnapshot': newTx,
+                    });
+                  }
                 });
 
                 _saveData();
                 _syncWithCloud(silent: true);
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Successfully Updated & Saved!')));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Updated & Audit Log Created!')));
               },
               child: const Text('Save Changes', style: TextStyle(color: Colors.white)),
             ),
@@ -732,6 +775,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // Delete Transaction to Recycle Bin
   void _deleteTransactionById(String id) async {
     if (!await _authenticateAction('Delete Record')) return;
     if (!mounted) return;
@@ -739,14 +783,19 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete Entry Confirmation', style: TextStyle(color: Colors.red)),
-        content: const Text('Kya aap waqai is entry ko permanent delete karna chahte hain? Yeh cloud se bhi hamesha ke liye mit jayegi.'),
+        title: const Text('Move to Recycle Bin?', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+        content: const Text('Yeh entry main list se hat kar Settings ke "Recycle Bin" mein chali jayegi. Aap wahan se ise baad mein wapis RESTORE bhi kar sakte hain.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
+              final deletedItem = transactions.firstWhere((item) => item['id'] == id);
               setState(() {
+                final trashItem = Map<String, dynamic>.from(deletedItem);
+                trashItem['deletedAt'] = DateTime.now().toIso8601String();
+                recycleBin.insert(0, trashItem);
+
                 transactions.removeWhere((item) => item['id'] == id);
                 if (!deletedTxIds.contains(id)) {
                   deletedTxIds.add(id);
@@ -755,16 +804,242 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               _saveData();
               _syncWithCloud(silent: true);
               Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Permanently Deleted!')));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Moved to Recycle Bin! (Settings se restore karein)')));
             },
-            child: const Text('DELETE', style: TextStyle(color: Colors.white)),
+            child: const Text('MOVE TO TRASH', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
     );
   }
 
-  // Bulk Rename Location or JP
+  // Restore Transaction from Recycle Bin
+  void _restoreFromRecycleBin(Map<String, dynamic> item) {
+    setState(() {
+      recycleBin.removeWhere((x) => x['id'] == item['id']);
+      deletedTxIds.remove(item['id']);
+
+      final restoredItem = Map<String, dynamic>.from(item);
+      restoredItem.remove('deletedAt');
+      restoredItem['updatedAt'] = DateTime.now().toIso8601String();
+
+      transactions.add(restoredItem);
+    });
+    _saveData();
+    _syncWithCloud(silent: true);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      backgroundColor: Colors.green.shade800,
+      content: Text('Restored: ${item['category']} (${item['pipeSize']}) wapis active ho gaya!'),
+    ));
+  }
+
+  // Permanent Delete from Recycle Bin
+  void _permanentDeleteFromTrash(String id) {
+    setState(() {
+      recycleBin.removeWhere((x) => x['id'] == id);
+    });
+    _saveData();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permanently removed from Trash!')));
+  }
+
+  // Screen for Recycle Bin & Edit Audit History
+  void _openRecycleBinAndAuditScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DefaultTabController(
+          length: 2,
+          child: Scaffold(
+            appBar: AppBar(
+              backgroundColor: const Color(0xFF0A2540),
+              foregroundColor: Colors.white,
+              title: const Text('Recycle Bin & Edit History', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              bottom: const TabBar(
+                indicatorColor: Color(0xFFF25F22),
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.white60,
+                tabs: [
+                  Tab(icon: Icon(Icons.delete_sweep), text: 'Recycle Bin'),
+                  Tab(icon: Icon(Icons.history_edu), text: 'Edit Audit Log'),
+                ],
+              ),
+            ),
+            body: TabBarView(
+              children: [
+                // Tab 1: Recycle Bin
+                StatefulBuilder(
+                  builder: (ctx, setTrashState) => recycleBin.isEmpty
+                      ? const Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.delete_outline, size: 64, color: Colors.grey),
+                              SizedBox(height: 8),
+                              Text('Recycle Bin is Empty!', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+                              Text('Deleted records yahan nazar aayenge.', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(10),
+                          itemCount: recycleBin.length,
+                          itemBuilder: (ctx, idx) {
+                            final item = recycleBin[idx];
+                            final delDate = DateTime.tryParse(item['deletedAt'] ?? '') ?? DateTime.now();
+                            final formattedDate = DateFormat('yyyy-MM-dd hh:mm a').format(delDate);
+                            final isCut = (item['category'] == 'Cut Piece');
+
+                            return Card(
+                              elevation: 2,
+                              margin: const EdgeInsets.only(bottom: 10),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12.0),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                          decoration: BoxDecoration(color: Colors.red.shade100, borderRadius: BorderRadius.circular(4)),
+                                          child: Text('DELETED: ${item['type']}', style: TextStyle(color: Colors.red.shade900, fontWeight: FontWeight.bold, fontSize: 11)),
+                                        ),
+                                        Text('Deleted: $formattedDate', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text('${item['category']} - Size: ${item['pipeSize']} | Grade: ${item['pipeGrade']}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                    const SizedBox(height: 2),
+                                    Text('SCH/Class: ${item['pipeSch'] ?? item['itemClass'] ?? ''} | Coating: ${item['internalCoating']}', style: const TextStyle(fontSize: 12, color: Colors.black87)),
+                                    Text('Qty: ${item['quantity']} Pcs ${isCut ? "(${item['lengthMeters']}m)" : ""} | Original Date: ${item['date']}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                                    if ((item['entity'] ?? '').toString().isNotEmpty || (item['location'] ?? '').toString().isNotEmpty)
+                                      Text('Loc/Person: ${item['entity'] ?? item['location']}${(item['jpName'] != null && item['jpName'].toString().isNotEmpty) ? " | JP: ${item['jpName']}" : ""}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                    const Divider(height: 16),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        OutlinedButton.icon(
+                                          style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                                          icon: const Icon(Icons.delete_forever, size: 16),
+                                          label: const Text('Permanent Delete', style: TextStyle(fontSize: 11)),
+                                          onPressed: () {
+                                            _permanentDeleteFromTrash(item['id']);
+                                            setTrashState(() {});
+                                            setState(() {});
+                                          },
+                                        ),
+                                        const SizedBox(width: 8),
+                                        ElevatedButton.icon(
+                                          style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
+                                          icon: const Icon(Icons.restore, color: Colors.white, size: 16),
+                                          label: const Text('Restore', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                                          onPressed: () {
+                                            _restoreFromRecycleBin(item);
+                                            setTrashState(() {});
+                                            setState(() {});
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+
+                // Tab 2: Edit Audit Log
+                editAuditLogs.isEmpty
+                    ? const Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.edit_note, size: 64, color: Colors.grey),
+                            SizedBox(height: 8),
+                            Text('No Edit History Found', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+                            Text('Koi bhi entry edit karne par uski before/after changes yahan dikhengi.', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(10),
+                        itemCount: editAuditLogs.length,
+                        itemBuilder: (ctx, idx) {
+                          final log = editAuditLogs[idx];
+                          final editTime = DateTime.tryParse(log['editedAt'] ?? '') ?? DateTime.now();
+                          final formattedTime = DateFormat('yyyy-MM-dd hh:mm:ss a').format(editTime);
+                          final List changes = log['changes'] ?? [];
+
+                          return Card(
+                            elevation: 2,
+                            margin: const EdgeInsets.only(bottom: 10),
+                            child: Padding(
+                              padding: const EdgeInsets.all(12.0),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                        decoration: BoxDecoration(color: Colors.blue.shade100, borderRadius: BorderRadius.circular(4)),
+                                        child: Text('${log['type']} UPDATED', style: TextStyle(color: Colors.blue.shade900, fontWeight: FontWeight.bold, fontSize: 11)),
+                                      ),
+                                      Text(formattedTime, style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text('${log['category']} (${log['size']}) - Grade: ${log['grade']}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                  const SizedBox(height: 8),
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(color: Colors.amber.shade50, borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.amber.shade200)),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        const Text('Field Changes (Pehle ➔ Ab Naya):', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0A2540))),
+                                        const SizedBox(height: 4),
+                                        ...changes.map((ch) => Padding(
+                                              padding: const EdgeInsets.symmetric(vertical: 2.0),
+                                              child: Row(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text('• ${ch['field']}: ', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                                                  Expanded(
+                                                    child: RichText(
+                                                      text: TextSpan(
+                                                        style: const TextStyle(fontSize: 11, color: Colors.black),
+                                                        children: [
+                                                          TextSpan(text: '${ch['old']}', style: TextStyle(color: Colors.red.shade700, decoration: TextDecoration.lineThrough)),
+                                                          const TextSpan(text: '  ➔  ', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54)),
+                                                          TextSpan(text: '${ch['new']}', style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold)),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            )),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _renameLocationOrJpDialog({required bool isLocation, required String oldName}) {
     final newCtrl = TextEditingController(text: oldName);
     bool cascade = true;
@@ -847,7 +1122,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Point 1: Permanent Deletion of Location or JP - Will NOT reappear after sync!
   void _deleteLocationOrJp({required bool isLocation, required String name}) {
     showDialog(
       context: context,
@@ -886,6 +1160,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       ),
     );
   }
+
+// // ==========================================
+// PART 2 (Part 1 ke neechay yahan se paste karein)
+// ==========================================
 
   Widget _buildOfficialMonogram() {
     File? cachedLogo;
@@ -1389,19 +1667,16 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Point 2: History with Type Filter + Coating Filter + Date Range Picker + Touch Highlight
   Widget _buildHistory() {
     final filtered = transactions.where((t) {
       if (_historyTypeFilter == 'RECEIVE' && t['type'] != 'RECEIVE') return false;
       if (_historyTypeFilter == 'ISSUE' && t['type'] != 'ISSUE') return false;
       if (_historyTypeFilter == 'RETURN' && t['type'] != 'RETURN') return false;
 
-      // Point 2: Coating Filter logic
       if (_historyCoatingFilter != 'ALL') {
         if ((t['internalCoating'] ?? '') != _historyCoatingFilter) return false;
       }
 
-      // Filter by Date Range
       if (_historyStartDate != null && _historyEndDate != null) {
         final tDate = DateTime.tryParse(t['date'] ?? '');
         if (tDate != null) {
@@ -1495,7 +1770,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ),
         ),
 
-        // Row 1: Type Filters
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: SingleChildScrollView(
@@ -1514,7 +1788,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           ),
         ),
 
-        // Point 2: Row 2 - Coating Filter Chips
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           child: SingleChildScrollView(
@@ -1636,7 +1909,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Settings & Management
+  // Settings Screen
   Widget _buildManageAndBackup() {
     final rLocCtrl = TextEditingController();
     final iLocCtrl = TextEditingController();
@@ -1653,6 +1926,24 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           IconButton(icon: const Icon(Icons.lock, color: Colors.red), tooltip: 'Lock', onPressed: () { setState(() { _isSettingsUnlocked = false; _navIndex = 0; }); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings Locked!'))); }),
         ]),
         const SizedBox(height: 6),
+
+        // NEW: Recycle Bin & Edit Audit History Tile
+        Card(
+          color: const Color(0xFFFFF7ED),
+          elevation: 2,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: const BorderSide(color: Color(0xFFF25F22), width: 1.2)),
+          child: ListTile(
+            leading: const CircleAvatar(
+              backgroundColor: Color(0xFFF25F22),
+              child: Icon(Icons.restore_from_trash, color: Colors.white, size: 24),
+            ),
+            title: const Text('Recycle Bin & Edit History', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0A2540))),
+            subtitle: Text('Deleted items: ${recycleBin.length} | Edit Audit logs: ${editAuditLogs.length}', style: const TextStyle(fontSize: 11, color: Colors.black87)),
+            trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Color(0xFFF25F22)),
+            onTap: _openRecycleBinAndAuditScreen,
+          ),
+        ),
+        const SizedBox(height: 10),
 
         // Category Priority Pinning
         Card(
@@ -1743,7 +2034,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // Backup
+        // Backup & Restore
         const Text('Backup & Data Protection', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         Card(
@@ -1766,6 +2057,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                       'timestamp': DateTime.now().toIso8601String(),
                       'transactions': transactions,
                       'deletedTxIds': deletedTxIds,
+                      'recycleBin': recycleBin,
+                      'editAuditLogs': editAuditLogs,
                       'deletedLocations': deletedLocations,
                       'deletedJpNames': deletedJpNames,
                       'receivingLocations': receivingLocations,
@@ -1788,6 +2081,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     setState(() {
                       if (data['transactions'] != null) transactions = List<Map<String, dynamic>>.from(data['transactions']);
                       if (data['deletedTxIds'] != null) deletedTxIds = List<String>.from(data['deletedTxIds']);
+                      if (data['recycleBin'] != null) recycleBin = List<Map<String, dynamic>>.from(data['recycleBin']);
+                      if (data['editAuditLogs'] != null) editAuditLogs = List<Map<String, dynamic>>.from(data['editAuditLogs']);
                       if (data['deletedLocations'] != null) deletedLocations = List<String>.from(data['deletedLocations']);
                       if (data['deletedJpNames'] != null) deletedJpNames = List<String>.from(data['deletedJpNames']);
                       if (data['receivingLocations'] != null) receivingLocations = List<String>.from(data['receivingLocations']);
