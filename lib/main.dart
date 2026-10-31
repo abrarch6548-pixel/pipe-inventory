@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:excel/excel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -49,7 +50,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
   List<String> pinnedLocations = [];
   List<String> pinnedJpNames = [];
-  List<String> pinnedCategories = [];
+  List<String> pinnedCategories = ['Bare Pipe', '3LPP Pipe'];
 
   String _securityPin = '1234';
   String _firebaseUrl = '';
@@ -64,10 +65,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     'Elbow', 'Flange'
   ];
 
-  final List<String> coatingOptions = [
-    'Internal Coated', 'Without Internal Coating'
-  ];
-
+  final List<String> coatingOptions = ['Internal Coated', 'Without Internal Coating'];
   String _stockSearchQuery = '';
   String _historySearchQuery = '';
   String _historyTypeFilter = 'ALL';
@@ -77,9 +75,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     super.initState();
     _loadData().then((_) {
       _checkAndRunDailyAutoBackup();
-      if (_firebaseUrl.isNotEmpty) {
-        _syncWithCloud(silent: true);
-      }
+      if (_firebaseUrl.isNotEmpty) _syncWithCloud(silent: true);
     });
   }
 
@@ -92,37 +88,18 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       if (await file.exists()) {
-        final content = await file.readAsString();
-        final data = jsonDecode(content);
+        final data = jsonDecode(await file.readAsString());
         setState(() {
           transactions = List<Map<String, dynamic>>.from(data['transactions'] ?? []);
-          if (data['receivingLocations'] != null) {
-            receivingLocations = List<String>.from(data['receivingLocations']);
-          }
-          if (data['issueLocations'] != null) {
-            issueLocations = List<String>.from(data['issueLocations']);
-          }
-          if (data['jpNames'] != null) {
-            jpNames = List<String>.from(data['jpNames']);
-          }
-          if (data['pinnedLocations'] != null) {
-            pinnedLocations = List<String>.from(data['pinnedLocations']);
-          }
-          if (data['pinnedJpNames'] != null) {
-            pinnedJpNames = List<String>.from(data['pinnedJpNames']);
-          }
-          if (data['pinnedCategories'] != null) {
-            pinnedCategories = List<String>.from(data['pinnedCategories']);
-          }
-          if (data['securityPin'] != null) {
-            _securityPin = data['securityPin'].toString();
-          }
-          if (data['firebaseUrl'] != null) {
-            _firebaseUrl = data['firebaseUrl'].toString();
-          }
-          if (data['cloudStoreId'] != null) {
-            _cloudStoreId = data['cloudStoreId'].toString();
-          }
+          if (data['receivingLocations'] != null) receivingLocations = List<String>.from(data['receivingLocations']);
+          if (data['issueLocations'] != null) issueLocations = List<String>.from(data['issueLocations']);
+          if (data['jpNames'] != null) jpNames = List<String>.from(data['jpNames']);
+          if (data['pinnedLocations'] != null) pinnedLocations = List<String>.from(data['pinnedLocations']);
+          if (data['pinnedJpNames'] != null) pinnedJpNames = List<String>.from(data['pinnedJpNames']);
+          if (data['pinnedCategories'] != null) pinnedCategories = List<String>.from(data['pinnedCategories']);
+          if (data['securityPin'] != null) _securityPin = data['securityPin'].toString();
+          if (data['firebaseUrl'] != null) _firebaseUrl = data['firebaseUrl'].toString();
+          if (data['cloudStoreId'] != null) _cloudStoreId = data['cloudStoreId'].toString();
         });
       }
     } catch (_) {}
@@ -132,7 +109,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       final payload = {
-        'version': '4.0',
+        'version': '4.2',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
@@ -149,49 +126,37 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     } catch (_) {}
   }
 
+  // Auto Daily Backup (Point 8)
   Future<void> _checkAndRunDailyAutoBackup() async {
     try {
       final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
       final dir = await getApplicationDocumentsDirectory();
       final backupDir = Directory('${dir.path}/Daily_Backups');
-      if (!await backupDir.exists()) {
-        await backupDir.create(recursive: true);
-      }
-      final todayBackupFile = File('${backupDir.path}/auto_backup_$todayStr.json');
-      if (!await todayBackupFile.exists() && transactions.isNotEmpty) {
-        final payload = {
+      if (!await backupDir.exists()) await backupDir.create(recursive: true);
+      final todayFile = File('${backupDir.path}/auto_backup_$todayStr.json');
+      if (!await todayFile.exists() && transactions.isNotEmpty) {
+        await todayFile.writeAsString(jsonEncode({
           'backupDate': todayStr,
           'createdAt': DateTime.now().toIso8601String(),
           'transactions': transactions,
           'receivingLocations': receivingLocations,
           'issueLocations': issueLocations,
           'jpNames': jpNames,
-        };
-        await todayBackupFile.writeAsString(jsonEncode(payload));
+        }));
       }
     } catch (_) {}
   }
 
-  String _norm(dynamic s) => (s ?? '')
-      .toString()
-      .replaceAll('"', '')
-      .replaceAll("'", '')
-      .replaceAll(' ', '')
-      .trim()
-      .toLowerCase();
+  String _norm(dynamic s) => (s ?? '').toString().replaceAll('"', '').replaceAll("'", '').replaceAll(' ', '').trim().toLowerCase();
 
   bool _matchStrict(Map<String, dynamic> t, String size, String grade, String schOrClass, String coat) {
-    final s1 = _norm(t['pipeSize']);
-    final g1 = _norm(t['pipeGrade']);
-    final sch1 = _norm(t['pipeSch'] ?? t['itemClass']);
-    final c1 = _norm(t['internalCoating']);
-
-    return s1 == _norm(size) &&
-        g1 == _norm(grade) &&
-        sch1 == _norm(schOrClass) &&
-        c1 == _norm(coat);
+    return _norm(t['pipeSize']) == _norm(size) &&
+        _norm(t['pipeGrade']) == _norm(grade) &&
+        _norm(t['pipeSch'] ?? t['itemClass']) == _norm(schOrClass) &&
+        _norm(t['internalCoating']) == _norm(coat);
   }
 
+  // Stock Calculation Engine with Meters & Smart Painted Deduction
   Map<String, Map<String, double>> _calculateSpecStocks(String size, String grade, String schOrClass, String coating) {
     final Map<String, Map<String, double>> stocks = {
       for (var c in categories) c: {'qty': 0.0, 'meters': 0.0}
@@ -248,14 +213,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
   double _getPhysicalStockQty(String size, String grade, String schOrClass, String cat, String coating) {
     if (size.trim().isEmpty || grade.trim().isEmpty) return 0.0;
-    final spec = _calculateSpecStocks(size, grade, schOrClass, coating);
-    return spec[cat]?['qty'] ?? 0.0;
+    return _calculateSpecStocks(size, grade, schOrClass, coating)[cat]?['qty'] ?? 0.0;
   }
 
   double _getPhysicalStockMeters(String size, String grade, String schOrClass, String cat, String coating) {
     if (size.trim().isEmpty || grade.trim().isEmpty) return 0.0;
-    final spec = _calculateSpecStocks(size, grade, schOrClass, coating);
-    return spec[cat]?['meters'] ?? 0.0;
+    return _calculateSpecStocks(size, grade, schOrClass, coating)[cat]?['meters'] ?? 0.0;
   }
 
   double _getTotalAvailableToIssue(String size, String grade, String schOrClass, String cat, String coating) {
@@ -276,106 +239,252 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   List<String> _getSortedList(List<String> allItems, List<String> pinnedItems) {
     final list = List<String>.from(allItems);
     list.sort((a, b) {
-      final aPinned = pinnedItems.contains(a);
-      final bPinned = pinnedItems.contains(b);
-      if (aPinned && !bPinned) return -1;
-      if (!aPinned && bPinned) return 1;
+      final aPin = pinnedItems.contains(a);
+      final bPin = pinnedItems.contains(b);
+      if (aPin && !bPin) return -1;
+      if (!aPin && bPin) return 1;
       return a.compareTo(b);
     });
     return list;
-  }Future<void> _syncWithCloud({bool silent = false}) async {
-    if (_isSyncing) return;
-    if (_firebaseUrl.trim().isEmpty) {
-      if (!silent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Pehle Settings mein ja kar Firebase URL paste karein!')),
+  }
+
+  // Real Excel (.XLSX) & Corporate PDF Generator (Point 2 & 3)
+  Future<void> _exportDocument({required String reportType, required String format, List<Map<String, dynamic>>? customList}) async {
+    final nowStr = DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now());
+    final printDate = DateFormat('yyyy-MM-dd hh:mm a').format(DateTime.now());
+    final isPdf = format == 'PDF';
+    final dir = await getApplicationDocumentsDirectory();
+
+    if (!isPdf) {
+      var excel = Excel.createExcel();
+      Sheet sheet = excel[excel.getDefaultSheet() ?? 'Sheet1'];
+      excel.rename(excel.getDefaultSheet() ?? 'Sheet1', 'SOFS_Inventory');
+
+      if (reportType == 'STOCK') {
+        sheet.appendRow([
+          TextCellValue('Category'), TextCellValue('Size'), TextCellValue('Grade'),
+          TextCellValue('SCH / Class'), TextCellValue('Coating'), TextCellValue('In-Store Qty (Pcs)'),
+          TextCellValue('Total Length (Meters)'), TextCellValue('Stock Status')
+        ]);
+        for (var cat in categories) {
+          final specMap = <String, Map<String, String>>{};
+          for (var t in transactions) {
+            final s = (t['pipeSize'] ?? '').toString().trim();
+            final g = (t['pipeGrade'] ?? '').toString().trim();
+            final sch = (t['pipeSch'] ?? t['itemClass'] ?? '').toString().trim();
+            specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
+          }
+          for (var spec in specMap.values) {
+            final s = spec['size']!; final g = spec['grade']!; final sch = spec['sch']!;
+            for (var coat in coatingOptions) {
+              double qty = _getPhysicalStockQty(s, g, sch, cat, coat);
+              double meters = _getPhysicalStockMeters(s, g, sch, cat, coat);
+              if (qty > 0 || meters > 0) {
+                String note = (cat == 'Painting Pipe' || cat == 'Painting Bend') ? 'Ready in Yard' : 'Physical Stock';
+                sheet.appendRow([
+                  TextCellValue(cat), TextCellValue(s), TextCellValue(g), TextCellValue(sch),
+                  TextCellValue(coat), TextCellValue(qty.toString()), TextCellValue(meters > 0 ? meters.toString() : '-'),
+                  TextCellValue(note)
+                ]);
+              }
+            }
+          }
+        }
+      } else {
+        final list = customList ?? transactions;
+        sheet.appendRow([
+          TextCellValue('Type'), TextCellValue('Date'), TextCellValue('Category'), TextCellValue('Size'),
+          TextCellValue('Grade'), TextCellValue('SCH / Class'), TextCellValue('Coating'), TextCellValue('Quantity (Pcs)'),
+          TextCellValue('Length (Meters)'), TextCellValue('Location / Person'), TextCellValue('JP Name'), TextCellValue('Remarks')
+        ]);
+        for (var t in list) {
+          if (reportType == 'RECEIVE' && t['type'] != 'RECEIVE') continue;
+          if (reportType == 'ISSUE' && t['type'] != 'ISSUE') continue;
+          if (reportType == 'RETURN' && t['type'] != 'RETURN') continue;
+
+          sheet.appendRow([
+            TextCellValue(t['type'] ?? ''), TextCellValue(t['date'] ?? ''), TextCellValue(t['category'] ?? ''),
+            TextCellValue(t['pipeSize'] ?? ''), TextCellValue(t['pipeGrade'] ?? ''), TextCellValue(t['pipeSch'] ?? t['itemClass'] ?? ''),
+            TextCellValue(t['internalCoating'] ?? ''), TextCellValue((t['quantity'] ?? 0).toString()),
+            TextCellValue((t['lengthMeters'] ?? 0) > 0 ? (t['lengthMeters']).toString() : '-'),
+            TextCellValue(t['entity'] ?? t['location'] ?? ''), TextCellValue(t['jpName'] ?? ''), TextCellValue(t['remarks'] ?? '')
+          ]);
+        }
+      }
+
+      final fileBytes = excel.save();
+      final fileName = 'SOFS_${reportType}_$nowStr.xlsx';
+      final file = File('${dir.path}/$fileName');
+      if (fileBytes != null) await file.writeAsBytes(fileBytes);
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(children: [Icon(Icons.table_chart, color: Colors.green), SizedBox(width: 8), Text('Excel (.XLSX) Exported!')]),
+            content: Text('File saved:\n${file.path}\n\nYeh file asli Microsoft Excel (.xlsx) format mein save ho gayi hai.'),
+            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+          ),
         );
       }
+    } else {
+      // PDF HTML Generator
+      final StringBuffer html = StringBuffer();
+      html.writeln('''<!DOCTYPE html><html><head><meta charset="utf-8">
+      <title>SOFS - Material Report</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 25px; color: #0f172a; }
+        .head { border-bottom: 3px solid #0A2540; padding-bottom: 10px; margin-bottom: 15px; display: flex; justify-content: space-between; }
+        .logo-title { color: #0A2540; font-size: 22px; font-weight: 900; }
+        .logo-sub { color: #F25F22; font-size: 12px; font-weight: bold; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+        th { background: #0A2540; color: white; padding: 8px; text-align: left; }
+        td { padding: 8px; border-bottom: 1px solid #e2e8f0; }
+        tr:nth-child(even) { background: #f8fafc; }
+        .btn { background: #0A2540; color: white; border: none; padding: 8px 18px; font-weight: bold; border-radius: 4px; cursor: pointer; margin-bottom: 15px; }
+        @media print { .no-print { display: none; } body { margin: 0; } }
+      </style></head><body>
+      <div class="no-print"><button class="btn" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+      <div class="head">
+        <div><div class="logo-title">SAARI OIL FIELD SERVICES</div><div class="logo-sub">MATERIAL CONTROL & PIPELINE LOGISTICS</div></div>
+        <div style="text-align:right;font-size:11px;color:#64748b;">Report: <b>$reportType</b><br>Date: $printDate</div>
+      </div>''');
+
+      if (reportType == 'STOCK') {
+        html.writeln('<table><thead><tr><th>Category</th><th>Size</th><th>Grade</th><th>SCH/Class</th><th>Coating</th><th>In-Yard Qty</th><th>Meters</th><th>Status</th></tr></thead><tbody>');
+        for (var cat in categories) {
+          final specMap = <String, Map<String, String>>{};
+          for (var t in transactions) {
+            final s = (t['pipeSize'] ?? '').toString().trim();
+            final g = (t['pipeGrade'] ?? '').toString().trim();
+            final sch = (t['pipeSch'] ?? t['itemClass'] ?? '').toString().trim();
+            specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
+          }
+          for (var spec in specMap.values) {
+            final s = spec['size']!; final g = spec['grade']!; final sch = spec['sch']!;
+            for (var coat in coatingOptions) {
+              double qty = _getPhysicalStockQty(s, g, sch, cat, coat);
+              double meters = _getPhysicalStockMeters(s, g, sch, cat, coat);
+              if (qty > 0 || meters > 0) {
+                String note = (cat == 'Painting Pipe' || cat == 'Painting Bend') ? 'Ready in Yard' : 'Physical Stock';
+                html.writeln('<tr><td><b>$cat</b></td><td>$s</td><td>$g</td><td>$sch</td><td>$coat</td><td><b>$qty Pcs</b></td><td>${meters > 0 ? "$meters m" : "-"}</td><td>$note</td></tr>');
+              }
+            }
+          }
+        }
+      } else {
+        final list = customList ?? transactions;
+        html.writeln('<table><thead><tr><th>Type</th><th>Date</th><th>Category</th><th>Size</th><th>Grade</th><th>SCH/Class</th><th>Coating</th><th>Qty</th><th>Meters</th><th>Location/Person</th><th>JP</th><th>Remarks</th></tr></thead><tbody>');
+        for (var t in list) {
+          if (reportType == 'RECEIVE' && t['type'] != 'RECEIVE') continue;
+          if (reportType == 'ISSUE' && t['type'] != 'ISSUE') continue;
+          if (reportType == 'RETURN' && t['type'] != 'RETURN') continue;
+
+          html.writeln('<tr><td><b>${t['type']}</b></td><td>${t['date']}</td><td>${t['category']}</td><td>${t['pipeSize']}</td><td>${t['pipeGrade']}</td><td>${t['pipeSch'] ?? t['itemClass'] ?? ''}</td><td>${t['internalCoating']}</td><td><b>${t['quantity']}</b></td><td>${(t['lengthMeters'] ?? 0) > 0 ? "${t['lengthMeters']}m" : "-"}</td><td>${t['entity'] ?? t['location'] ?? ''}</td><td>${t['jpName'] ?? ''}</td><td>${t['remarks'] ?? ''}</td></tr>');
+        }
+      }
+      html.writeln('</tbody></table></body></html>');
+
+      final file = File('${dir.path}/SOFS_${reportType}_$nowStr.html');
+      await file.writeAsString(html.toString());
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(children: [Icon(Icons.picture_as_pdf, color: Colors.red), SizedBox(width: 8), Text('Printable PDF Ready!')]),
+            content: Text('File saved:\n${file.path}\n\nBrowser mein open kar ke "Save as PDF" ya print kar sakte hain.'),
+            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+          ),
+        );
+      }
+    }
+  }
+
+  void _showExportChoiceDialog(String reportType, {List<Map<String, dynamic>>? customList}) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Export $reportType Report', style: const TextStyle(fontWeight: FontWeight.bold)),
+        content: const Text('Select file format:'),
+        actions: [
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
+            icon: const Icon(Icons.table_chart, color: Colors.white, size: 16),
+            label: const Text('Excel (.XLSX)', style: TextStyle(color: Colors.white)),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _exportDocument(reportType: reportType, format: 'EXCEL', customList: customList);
+            },
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade800),
+            icon: const Icon(Icons.picture_as_pdf, color: Colors.white, size: 16),
+            label: const Text('Printable PDF', style: TextStyle(color: Colors.white)),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _exportDocument(reportType: reportType, format: 'PDF', customList: customList);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Cloud Sync
+  Future<void> _syncWithCloud({bool silent = false}) async {
+    if (_isSyncing) return;
+    if (_firebaseUrl.trim().isEmpty) {
+      if (!silent && mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Pehle Settings mein Firebase URL daalein!')));
       return;
     }
 
     setState(() => _isSyncing = true);
-
     try {
       String baseUrl = _firebaseUrl.trim();
-      if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
-        baseUrl = 'https://$baseUrl';
-      }
-      if (baseUrl.endsWith('/')) {
-        baseUrl = baseUrl.substring(0, baseUrl.length - 1);
-      }
+      if (!baseUrl.startsWith('http')) baseUrl = 'https://$baseUrl';
+      if (baseUrl.endsWith('/')) baseUrl = baseUrl.substring(0, baseUrl.length - 1);
 
       final syncUri = Uri.parse('$baseUrl/$_cloudStoreId.json');
+      final res = await http.get(syncUri).timeout(const Duration(seconds: 10));
 
-      final response = await http.get(syncUri).timeout(const Duration(seconds: 12));
-
-      if (response.statusCode == 200) {
-        if (response.body.isNotEmpty && response.body != 'null') {
-          final remoteData = jsonDecode(response.body);
-          if (remoteData is Map) {
-            final remoteTxList = List<Map<String, dynamic>>.from(remoteData['transactions'] ?? []);
-            final localMap = {for (var t in transactions) t['id']: t};
-            for (var rt in remoteTxList) {
-              localMap[rt['id']] = rt;
-            }
-
-            setState(() {
-              transactions = localMap.values.toList();
-              if (remoteData['receivingLocations'] != null) {
-                receivingLocations = List<String>.from({...receivingLocations, ...remoteData['receivingLocations']});
-              }
-              if (remoteData['issueLocations'] != null) {
-                issueLocations = List<String>.from({...issueLocations, ...remoteData['issueLocations']});
-              }
-              if (remoteData['jpNames'] != null) {
-                jpNames = List<String>.from({...jpNames, ...remoteData['jpNames']});
-              }
-            });
+      if (res.statusCode == 200 && res.body != 'null' && res.body.isNotEmpty) {
+        final remoteData = jsonDecode(res.body);
+        if (remoteData is Map) {
+          final remoteTx = List<Map<String, dynamic>>.from(remoteData['transactions'] ?? []);
+          final localMap = {for (var t in transactions) t['id']: t};
+          for (var rt in remoteTx) {
+            localMap[rt['id']] = rt;
           }
+          setState(() {
+            transactions = localMap.values.toList();
+            if (remoteData['receivingLocations'] != null) receivingLocations = List<String>.from({...receivingLocations, ...remoteData['receivingLocations']});
+            if (remoteData['issueLocations'] != null) issueLocations = List<String>.from({...issueLocations, ...remoteData['issueLocations']});
+            if (remoteData['jpNames'] != null) jpNames = List<String>.from({...jpNames, ...remoteData['jpNames']});
+          });
         }
       }
 
-      final uploadPayload = {
+      await http.put(syncUri, headers: {'Content-Type': 'application/json'}, body: jsonEncode({
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'receivingLocations': receivingLocations,
         'issueLocations': issueLocations,
         'jpNames': jpNames,
-      };
-
-      await http.put(
-        syncUri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(uploadPayload),
-      ).timeout(const Duration(seconds: 12));
+      })).timeout(const Duration(seconds: 10));
 
       await _saveData();
-
-      setState(() {
-        _lastSyncStatus = 'Synced at ${DateFormat('hh:mm a').format(DateTime.now())}';
-      });
-
-      if (!silent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: Colors.green.shade800,
-            content: Text('Cloud Sync Successful! (${transactions.length} total entries)'),
-          ),
-        );
-      }
+      setState(() => _lastSyncStatus = 'Synced at ${DateFormat('hh:mm a').format(DateTime.now())}');
+      if (!silent && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.green.shade800, content: Text('Cloud Sync Complete! (${transactions.length} entries)')));
     } catch (e) {
       setState(() => _lastSyncStatus = 'Sync Error');
-      if (!silent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(backgroundColor: Colors.red.shade800, content: Text('Sync Error: $e')),
-        );
-      }
+      if (!silent && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red.shade800, content: Text('Sync Error: $e')));
     } finally {
       setState(() => _isSyncing = false);
     }
   }
 
-  Future<bool> _authenticateAction(String actionTitle) async {
+  Future<bool> _authenticateAction(String title) async {
     final pinResult = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -384,34 +493,16 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         String errorMsg = '';
         return StatefulBuilder(
           builder: (context, setDState) => AlertDialog(
-            title: Row(
-              children: [
-                const Icon(Icons.lock, color: Color(0xFF0A2540)),
-                const SizedBox(width: 8),
-                Expanded(child: Text('Security Lock - $actionTitle', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))),
-              ],
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('Please enter Master PIN to authorize:'),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: pinCtrl,
-                  obscureText: true,
-                  keyboardType: TextInputType.number,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    labelText: 'Master PIN',
-                    errorText: errorMsg.isNotEmpty ? errorMsg : null,
-                    border: const OutlineInputBorder(),
-                    prefixIcon: const Icon(Icons.pin),
-                  ),
-                ),
-              ],
+            title: Row(children: [const Icon(Icons.lock, color: Color(0xFF0A2540)), const SizedBox(width: 8), Expanded(child: Text('PIN - $title', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)))]),
+            content: TextField(
+              controller: pinCtrl,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              autofocus: true,
+              decoration: InputDecoration(labelText: 'Master PIN', errorText: errorMsg.isNotEmpty ? errorMsg : null, border: const OutlineInputBorder()),
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)),
                 onPressed: () {
@@ -421,7 +512,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     setDState(() => errorMsg = 'Incorrect PIN!');
                   }
                 },
-                child: const Text('Authorize', style: TextStyle(color: Colors.white)),
+                child: const Text('OK', style: TextStyle(color: Colors.white)),
               ),
             ],
           ),
@@ -431,14 +522,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return pinResult ?? false;
   }
 
+  // Edit (Point 4)
   void _editTransactionById(String id) async {
     final index = transactions.indexWhere((item) => item['id'] == id);
     if (index == -1) return;
+    if (!await _authenticateAction('Edit Record')) return;
 
-    final authorized = await _authenticateAction('Edit Record');
-    if (!authorized) return;
-
-    if (!mounted) return;
     final t = transactions[index];
     final sizeCtrl = TextEditingController(text: t['pipeSize'] ?? '');
     final gradeCtrl = TextEditingController(text: t['pipeGrade'] ?? '');
@@ -451,52 +540,25 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     String coat = t['internalCoating'] ?? coatingOptions.first;
     DateTime editDate = DateTime.tryParse(t['date'] ?? '') ?? DateTime.now();
 
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDState) => AlertDialog(
-          title: Text('Edit ${t['type']} Entry', style: const TextStyle(fontWeight: FontWeight.bold)),
+          title: Text('Edit ${t['type']} Entry', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8)),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Date: ${DateFormat('yyyy-MM-dd').format(editDate)}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                      IconButton(
-                        icon: const Icon(Icons.calendar_month, color: Color(0xFF0A2540)),
-                        onPressed: () async {
-                          final picked = await showDatePicker(
-                            context: context,
-                            initialDate: editDate,
-                            firstDate: DateTime(2000),
-                            lastDate: DateTime(2100),
-                          );
-                          if (picked != null) setDState(() => editDate = picked);
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
                   value: cat,
                   items: categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
                   onChanged: (v) => setDState(() => cat = v!),
-                  decoration: const InputDecoration(labelText: 'Category / Item'),
+                  decoration: const InputDecoration(labelText: 'Item Category'),
                 ),
                 TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Size')),
                 TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Grade')),
-                TextField(
-                  controller: schCtrl,
-                  decoration: InputDecoration(
-                    labelText: (cat == 'Elbow' || cat == 'Flange') ? 'Class / Rating (e.g. 150#, 300#)' : 'Pipe SCH',
-                  ),
-                ),
+                TextField(controller: schCtrl, decoration: InputDecoration(labelText: (cat == 'Elbow' || cat == 'Flange') ? 'Class' : 'SCH')),
                 DropdownButtonFormField<String>(
                   value: coat,
                   items: coatingOptions.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
@@ -504,9 +566,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   decoration: const InputDecoration(labelText: 'Coating'),
                 ),
                 TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity (Pcs)')),
-                if (cat == 'Cut Piece')
-                  TextField(controller: metersCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Total Length (Meters)')),
-                TextField(controller: entityCtrl, decoration: InputDecoration(labelText: t['type'] == 'RECEIVE' ? 'Receiving Location' : 'Destination / Person')),
+                if (cat == 'Cut Piece') TextField(controller: metersCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Meters (Length)')),
+                TextField(controller: entityCtrl, decoration: const InputDecoration(labelText: 'Location / Person')),
                 TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Remarks')),
               ],
             ),
@@ -517,32 +578,26 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)),
               onPressed: () {
                 final newQty = double.tryParse(qtyCtrl.text) ?? 0;
-                final newMeters = double.tryParse(metersCtrl.text) ?? 0.0;
                 if (newQty <= 0) return;
-
                 setState(() {
                   transactions[index]['date'] = DateFormat('yyyy-MM-dd').format(editDate);
                   transactions[index]['category'] = cat;
                   transactions[index]['pipeSize'] = sizeCtrl.text.trim();
                   transactions[index]['pipeGrade'] = gradeCtrl.text.trim();
-                  if (cat == 'Elbow' || cat == 'Flange') {
-                    transactions[index]['itemClass'] = schCtrl.text.trim();
-                    transactions[index]['pipeSch'] = schCtrl.text.trim();
-                  } else {
-                    transactions[index]['pipeSch'] = schCtrl.text.trim();
-                  }
+                  transactions[index]['pipeSch'] = schCtrl.text.trim();
+                  transactions[index]['itemClass'] = (cat == 'Elbow' || cat == 'Flange') ? schCtrl.text.trim() : '';
                   transactions[index]['internalCoating'] = coat;
                   transactions[index]['quantity'] = newQty;
-                  transactions[index]['lengthMeters'] = newMeters;
+                  transactions[index]['lengthMeters'] = double.tryParse(metersCtrl.text) ?? 0.0;
                   transactions[index]['entity'] = entityCtrl.text.trim();
                   transactions[index]['remarks'] = remarksCtrl.text.trim();
                 });
                 _saveData();
                 _syncWithCloud(silent: true);
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry updated successfully!')));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Updated!')));
               },
-              child: const Text('Save Changes', style: TextStyle(color: Colors.white)),
+              child: const Text('Save', style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
@@ -550,28 +605,26 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // Delete (Point 4)
   void _deleteTransactionById(String id) async {
-    final authorized = await _authenticateAction('Delete Record');
-    if (!authorized) return;
-
+    if (!await _authenticateAction('Delete Record')) return;
     if (!mounted) return;
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Entry Confirmation', style: TextStyle(color: Colors.red)),
-        content: const Text('Are you sure you want to delete this entry? Stock balance will update automatically.'),
+        content: const Text('Kya aap waqai is entry ko delete karna chahte hain?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
-              setState(() {
-                transactions.removeWhere((item) => item['id'] == id);
-              });
+              setState(() => transactions.removeWhere((item) => item['id'] == id));
               _saveData();
               _syncWithCloud(silent: true);
               Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry deleted successfully!')));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Deleted!')));
             },
             child: const Text('DELETE', style: TextStyle(color: Colors.white)),
           ),
@@ -580,9 +633,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // Bulk Rename (Point 6)
   void _renameLocationOrJpDialog({required bool isLocation, required String oldName}) {
-    final newNameCtrl = TextEditingController(text: oldName);
-    bool updateAllExisting = true;
+    final newCtrl = TextEditingController(text: oldName);
+    bool cascade = true;
 
     showDialog(
       context: context,
@@ -592,14 +646,13 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextField(controller: newNameCtrl, decoration: InputDecoration(labelText: 'New ${isLocation ? "Location" : "JP"} Name')),
-              const SizedBox(height: 12),
+              TextField(controller: newCtrl, decoration: InputDecoration(labelText: 'New Name')),
+              const SizedBox(height: 8),
               CheckboxListTile(
                 contentPadding: EdgeInsets.zero,
-                value: updateAllExisting,
-                title: const Text('Purani tamam entries mein bhi yeh naya naam update karein?', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                subtitle: const Text('One-click bulk rename across all past records.', style: TextStyle(fontSize: 11)),
-                onChanged: (val) => setDState(() => updateAllExisting = val ?? true),
+                value: cascade,
+                title: const Text('Purani tamam entries mein bhi update karein?', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                onChanged: (v) => setDState(() => cascade = v ?? true),
               ),
             ],
           ),
@@ -608,24 +661,22 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)),
               onPressed: () {
-                final newName = newNameCtrl.text.trim();
+                final newName = newCtrl.text.trim();
                 if (newName.isEmpty || newName == oldName) {
                   Navigator.pop(ctx);
                   return;
                 }
-
                 setState(() {
                   if (isLocation) {
-                    final idxR = receivingLocations.indexOf(oldName);
-                    if (idxR != -1) receivingLocations[idxR] = newName;
-                    final idxI = issueLocations.indexOf(oldName);
-                    if (idxI != -1) issueLocations[idxI] = newName;
+                    final rIdx = receivingLocations.indexOf(oldName);
+                    if (rIdx != -1) receivingLocations[rIdx] = newName;
+                    final iIdx = issueLocations.indexOf(oldName);
+                    if (iIdx != -1) issueLocations[iIdx] = newName;
                   } else {
-                    final idxJ = jpNames.indexOf(oldName);
-                    if (idxJ != -1) jpNames[idxJ] = newName;
+                    final jIdx = jpNames.indexOf(oldName);
+                    if (jIdx != -1) jpNames[jIdx] = newName;
                   }
-
-                  if (updateAllExisting) {
+                  if (cascade) {
                     for (var t in transactions) {
                       if (isLocation) {
                         if (t['entity'] == oldName) t['entity'] = newName;
@@ -636,15 +687,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     }
                   }
                 });
-
                 _saveData();
                 _syncWithCloud(silent: true);
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('${isLocation ? "Location" : "JP Name"} renamed & updated successfully!')),
-                );
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Renamed Successfully!')));
               },
-              child: const Text('Update & Save', style: TextStyle(color: Colors.white)),
+              child: const Text('Save', style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
@@ -652,290 +700,41 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  Future<void> _exportDocument({required String reportType, required String format, List<Map<String, dynamic>>? customList}) async {
-    final nowStr = DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now());
-    final printDate = DateFormat('yyyy-MM-dd hh:mm a').format(DateTime.now());
-    final isPdf = format == 'PDF';
-    final ext = isPdf ? 'html' : 'csv';
-    final fileName = 'SOFS_${reportType}_$nowStr.$ext';
-
-    String content = '';
-
-    if (reportType == 'STOCK') {
-      if (!isPdf) {
-        final StringBuffer csv = StringBuffer();
-        csv.writeln('Company: SAARI OIL FIELD SERVICES PIPE LINE');
-        csv.writeln('Report: Current Store Inventory Balance');
-        csv.writeln('Date: $printDate\n');
-        csv.writeln('Category,Size,Grade,SCH / Class,Coating,In-Store Balance Qty,Total Length (Meters),Stock Nature');
-        for (var cat in categories) {
-          final specMap = <String, Map<String, String>>{};
-          for (var t in transactions) {
-            final s = (t['pipeSize'] ?? '').toString().trim();
-            final g = (t['pipeGrade'] ?? '').toString().trim();
-            final sch = (t['pipeSch'] ?? t['itemClass'] ?? '').toString().trim();
-            specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
-          }
-          for (var spec in specMap.values) {
-            final s = spec['size']!;
-            final g = spec['grade']!;
-            final sch = spec['sch']!;
-            for (var coat in coatingOptions) {
-              double qty = _getPhysicalStockQty(s, g, sch, cat, coat);
-              double meters = _getPhysicalStockMeters(s, g, sch, cat, coat);
-              if (qty > 0 || meters > 0) {
-                String note = (cat == 'Painting Pipe' || cat == 'Painting Bend')
-                    ? 'Ready Painted in Yard'
-                    : 'Physical Stock';
-                csv.writeln('"$cat","$s","$g","$sch","$coat",$qty,$meters,"$note"');
-              }
-            }
-          }
-        }
-        content = csv.toString();
-      } else {
-        final StringBuffer html = StringBuffer();
-        html.writeln('''<!DOCTYPE html><html><head><meta charset="utf-8">
-        <title>SOFS - Inventory Balance Report</title>
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; margin: 30px; color: #0f172a; }
-          .header-box { border-bottom: 3px solid #0A2540; padding-bottom: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
-          .logo-text { color: #0A2540; font-size: 24px; font-weight: 900; letter-spacing: 0.5px; }
-          .logo-sub { color: #F25F22; font-size: 13px; font-weight: bold; letter-spacing: 1px; }
-          .meta-box { text-align: right; font-size: 12px; color: #64748b; }
-          table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-          th { background-color: #0A2540; color: white; padding: 10px 12px; text-align: left; font-size: 12px; text-transform: uppercase; }
-          td { padding: 9px 12px; border-bottom: 1px solid #e2e8f0; font-size: 12px; }
-          tr:nth-child(even) { background-color: #f8fafc; }
-          .badge-qty { font-weight: bold; color: #047857; font-size: 13px; }
-          .btn-print { background: #0A2540; color: white; border: none; padding: 10px 24px; font-weight: bold; border-radius: 6px; cursor: pointer; margin-bottom: 20px; }
-          @media print { .no-print { display: none; } body { margin: 0; } }
-        </style></head><body>
-        <div class="no-print"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
-        <div class="header-box">
-          <div>
-            <div class="logo-text">SAARI OIL FIELD SERVICES PIPE LINE</div>
-            <div class="logo-sub">WAREHOUSE & MATERIAL INVENTORY CONTROL</div>
-          </div>
-          <div class="meta-box">
-            <div>Report: <b>Live Stock Balance</b></div>
-            <div>Generated: $printDate</div>
-          </div>
-        </div>
-        <table><thead><tr>
-          <th>Category</th><th>Size</th><th>Grade</th><th>SCH / Class</th><th>Coating</th><th>In-Yard Qty</th><th>Length (Meters)</th><th>Status</th>
-        </tr></thead><tbody>''');
-
-        for (var cat in categories) {
-          final specMap = <String, Map<String, String>>{};
-          for (var t in transactions) {
-            final s = (t['pipeSize'] ?? '').toString().trim();
-            final g = (t['pipeGrade'] ?? '').toString().trim();
-            final sch = (t['pipeSch'] ?? t['itemClass'] ?? '').toString().trim();
-            specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
-          }
-          for (var spec in specMap.values) {
-            final s = spec['size']!;
-            final g = spec['grade']!;
-            final sch = spec['sch']!;
-            for (var coat in coatingOptions) {
-              double qty = _getPhysicalStockQty(s, g, sch, cat, coat);
-              double meters = _getPhysicalStockMeters(s, g, sch, cat, coat);
-              if (qty > 0 || meters > 0) {
-                String note = (cat == 'Painting Pipe' || cat == 'Painting Bend')
-                    ? '<span style="color:#0d9488;font-weight:bold;">Ready in Yard</span>'
-                    : 'Physical Stock';
-                html.writeln('<tr><td><b>$cat</b></td><td>$s</td><td>$g</td><td>$sch</td><td>$coat</td><td class="badge-qty">$qty Pcs</td><td>${meters > 0 ? "$meters m" : "-"}</td><td>$note</td></tr>');
-              }
-            }
-          }
-        }
-        html.writeln('</tbody></table></body></html>');
-        content = html.toString();
-      }
-    } else {
-      final list = customList ?? transactions;
-      if (!isPdf) {
-        final StringBuffer csv = StringBuffer();
-        csv.writeln('Company: SAARI OIL FIELD SERVICES PIPE LINE');
-        csv.writeln('Report: $reportType Ledger Records');
-        csv.writeln('Date: $printDate\n');
-        csv.writeln('Type,Date,Category,Size,Grade,SCH / Class,Coating,Quantity (Pcs),Length (Meters),Location / Person,JP Name,Remarks');
-        for (var t in list) {
-          if (reportType == 'RECEIVE' && t['type'] != 'RECEIVE') continue;
-          if (reportType == 'ISSUE' && t['type'] != 'ISSUE') continue;
-          if (reportType == 'RETURN' && t['type'] != 'RETURN') continue;
-
-          final type = t['type'] ?? '';
-          final date = t['date'] ?? '';
-          final cat = t['category'] ?? '';
-          final size = t['pipeSize'] ?? '';
-          final grade = t['pipeGrade'] ?? '';
-          final sch = t['pipeSch'] ?? t['itemClass'] ?? '';
-          final coat = t['internalCoating'] ?? '';
-          final qty = t['quantity'] ?? 0;
-          final meters = t['lengthMeters'] ?? 0;
-          final loc = (t['entity'] ?? t['location'] ?? '').toString().replaceAll('"', '""');
-          final jp = (t['jpName'] ?? '').toString().replaceAll('"', '""');
-          final remarks = (t['remarks'] ?? '').toString().replaceAll('"', '""');
-
-          csv.writeln('"$type","$date","$cat","$size","$grade","$sch","$coat",$qty,$meters,"$loc","$jp","$remarks"');
-        }
-        content = csv.toString();
-      } else {
-        final StringBuffer html = StringBuffer();
-        html.writeln('''<!DOCTYPE html><html><head><meta charset="utf-8">
-        <title>SOFS - $reportType Report</title>
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; margin: 30px; color: #0f172a; }
-          .header-box { border-bottom: 3px solid #0A2540; padding-bottom: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
-          .logo-text { color: #0A2540; font-size: 24px; font-weight: 900; }
-          .logo-sub { color: #F25F22; font-size: 13px; font-weight: bold; }
-          .meta-box { text-align: right; font-size: 12px; color: #64748b; }
-          table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-          th { background-color: #0A2540; color: white; padding: 10px 12px; text-align: left; font-size: 12px; }
-          td { padding: 9px 12px; border-bottom: 1px solid #e2e8f0; font-size: 12px; }
-          tr:nth-child(even) { background-color: #f8fafc; }
-          .btn-print { background: #0A2540; color: white; border: none; padding: 10px 24px; font-weight: bold; border-radius: 6px; cursor: pointer; margin-bottom: 20px; }
-          @media print { .no-print { display: none; } body { margin: 0; } }
-        </style></head><body>
-        <div class="no-print"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
-        <div class="header-box">
-          <div>
-            <div class="logo-text">SAARI OIL FIELD SERVICES PIPE LINE</div>
-            <div class="logo-sub">MATERIAL TRANSACTION REPORT - $reportType</div>
-          </div>
-          <div class="meta-box">
-            <div>Generated: $printDate</div>
-            <div>Records: ${list.length}</div>
-          </div>
-        </div>
-        <table><thead><tr>
-          <th>Type</th><th>Date</th><th>Category</th><th>Size</th><th>Grade</th><th>SCH/Class</th><th>Coating</th><th>Qty</th><th>Meters</th><th>Location/Person</th><th>JP Name</th><th>Remarks</th>
-        </tr></thead><tbody>''');
-
-        for (var t in list) {
-          if (reportType == 'RECEIVE' && t['type'] != 'RECEIVE') continue;
-          if (reportType == 'ISSUE' && t['type'] != 'ISSUE') continue;
-          if (reportType == 'RETURN' && t['type'] != 'RETURN') continue;
-
-          html.writeln('<tr><td><b>${t['type']}</b></td><td>${t['date']}</td><td>${t['category']}</td><td>${t['pipeSize']}</td><td>${t['pipeGrade']}</td><td>${t['pipeSch'] ?? t['itemClass'] ?? ''}</td><td>${t['internalCoating']}</td><td><b>${t['quantity']}</b></td><td>${(t['lengthMeters'] ?? 0) > 0 ? "${t['lengthMeters']}m" : "-"}</td><td>${t['entity'] ?? t['location'] ?? ''}</td><td>${t['jpName'] ?? ''}</td><td>${t['remarks'] ?? ''}</td></tr>');
-        }
-        html.writeln('</tbody></table></body></html>');
-        content = html.toString();
-      }
-    }
-
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$fileName');
-      await file.writeAsString(content);
-
-      Clipboard.setData(ClipboardData(text: content));
-
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: Row(
-              children: [
-                Icon(isPdf ? Icons.picture_as_pdf : Icons.table_chart, color: isPdf ? Colors.red : Colors.green),
-                const SizedBox(width: 8),
-                Text(isPdf ? 'Printable PDF Ready' : 'Excel Sheet Generated'),
-              ],
-            ),
-            content: Text(
-              'File saved at:\n${file.path}\n\n${isPdf ? "Aap browser mein open kar ke 'Save as PDF' ya direct print kar sakte hain." : "Yeh file Microsoft Excel mein cleanly formatted columns ke sath khulegi."}\n\nData clipboard mein bhi copy ho gaya hai.',
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+  // Official Monogram (Point 1 & 10)
+  Widget _buildOfficialMonogram() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4)),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('S', style: TextStyle(color: Color(0xFF183B80), fontWeight: FontWeight.w900, fontSize: 16)),
+              const Text('A', style: TextStyle(color: Color(0xFF183B80), fontWeight: FontWeight.w900, fontSize: 16)),
+              const Text('A', style: TextStyle(color: Color(0xFFF25F22), fontWeight: FontWeight.w900, fontSize: 16)),
+              const Text('R', style: TextStyle(color: Color(0xFF183B80), fontWeight: FontWeight.w900, fontSize: 16)),
+              Stack(
+                alignment: Alignment.center,
+                children: [
+                  const Text('I', style: TextStyle(color: Color(0xFF183B80), fontWeight: FontWeight.w900, fontSize: 16)),
+                  Positioned(bottom: 1, child: Icon(Icons.architecture, color: Colors.amber.shade900, size: 8)),
+                ],
+              ),
             ],
           ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export Error: $e')));
-      }
-    }
-  }
-
-  void _showExportChoiceDialog(String reportType, {List<Map<String, dynamic>>? customList}) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Export $reportType Report', style: const TextStyle(fontWeight: FontWeight.bold)),
-        content: const Text('Select format to download:'),
-        actions: [
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
-            icon: const Icon(Icons.table_chart, color: Colors.white, size: 18),
-            label: const Text('Excel (.csv)', style: TextStyle(color: Colors.white)),
-            onPressed: () {
-              Navigator.pop(ctx);
-              _exportDocument(reportType: reportType, format: 'EXCEL', customList: customList);
-            },
+        ),
+        const SizedBox(width: 8),
+        const Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('SAARI OIL FIELD SERVICES', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: Colors.white), overflow: TextOverflow.ellipsis),
+              Text('PIPE LINE INVENTORY CONTROL', style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.bold, color: Color(0xFFF25F22), letterSpacing: 0.8)),
+            ],
           ),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade800),
-            icon: const Icon(Icons.picture_as_pdf, color: Colors.white, size: 18),
-            label: const Text('Corporate PDF', style: TextStyle(color: Colors.white)),
-            onPressed: () {
-              Navigator.pop(ctx);
-              _exportDocument(reportType: reportType, format: 'PDF', customList: customList);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  PreferredSizeWidget _buildCompanyAppBar() {
-    return AppBar(
-      backgroundColor: const Color(0xFF0A2540),
-      foregroundColor: Colors.white,
-      elevation: 2,
-      title: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: const Color(0xFFF25F22),
-              border: Border.all(color: Colors.amber, width: 2),
-            ),
-            child: const Icon(Icons.oil_barrel, size: 18, color: Colors.white),
-          ),
-          const SizedBox(width: 10),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'SAARI OIL FIELD SERVICES',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 0.8, color: Colors.white),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  'PIPE LINE INVENTORY CONTROL',
-                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: Color(0xFFF25F22)),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-      actions: [
-        Padding(
-          padding: const EdgeInsets.only(right: 8.0),
-          child: _isSyncing
-              ? const Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)))
-              : IconButton(
-                  icon: const Icon(Icons.cloud_sync, color: Colors.white, size: 26),
-                  tooltip: 'Sync Mobile & PC Data',
-                  onPressed: () => _syncWithCloud(silent: false),
-                ),
         ),
       ],
     );
@@ -944,14 +743,26 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: _buildCompanyAppBar(),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A2540),
+        foregroundColor: Colors.white,
+        elevation: 2,
+        title: _buildOfficialMonogram(),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: _isSyncing
+                ? const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)))
+                : IconButton(icon: const Icon(Icons.cloud_sync, color: Colors.white, size: 24), tooltip: 'Sync', onPressed: () => _syncWithCloud(silent: false)),
+          ),
+        ],
+      ),
       body: _buildCurrentScreen(),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _navIndex,
         onDestinationSelected: (i) async {
           if (i == 6 && !_isSettingsUnlocked) {
-            final ok = await _authenticateAction('Open Settings & Manage');
-            if (ok) {
+            if (await _authenticateAction('Open Settings')) {
               setState(() {
                 _isSettingsUnlocked = true;
                 _navIndex = i;
@@ -976,124 +787,75 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
   Widget _buildCurrentScreen() {
     if (_navIndex == 0) return _buildDashboard();
-    if (_navIndex == 1) return _buildReceiving();
-    if (_navIndex == 2) return _buildIssuing();
-    if (_navIndex == 3) return _buildReturning();
+    if (_navIndex == 1) return _buildTransactionForm('RECEIVE');
+    if (_navIndex == 2) return _buildTransactionForm('ISSUE');
+    if (_navIndex == 3) return _buildTransactionForm('RETURN');
     if (_navIndex == 4) return _buildStock();
     if (_navIndex == 5) return _buildHistory();
     return _buildManageAndBackup();
-  }Widget _buildDashboard() {
-    double received = 0;
-    double issued = 0;
-    double returned = 0;
+  }
 
+  Widget _buildDashboard() {
+    double rec = 0, iss = 0, ret = 0;
     for (var t in transactions) {
       double q = (t['quantity'] as num?)?.toDouble() ?? 0.0;
-      if (t['type'] == 'RECEIVE') received += q;
-      if (t['type'] == 'ISSUE') issued += q;
-      if (t['type'] == 'RETURN') returned += q;
+      if (t['type'] == 'RECEIVE') rec += q;
+      if (t['type'] == 'ISSUE') iss += q;
+      if (t['type'] == 'RETURN') ret += q;
     }
-    double balance = (received + returned) - issued;
+    double bal = (rec + ret) - iss;
 
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       children: [
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text('Inventory KPI Summary', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0A2540))),
+            const Text('Inventory KPI Summary', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0A2540))),
             Chip(
-              avatar: Icon(Icons.cloud, size: 14, color: _lastSyncStatus.startsWith('Synced') ? Colors.green : Colors.blue),
-              label: Text(_lastSyncStatus, style: const TextStyle(fontSize: 11)),
+              avatar: Icon(Icons.cloud, size: 12, color: _lastSyncStatus.startsWith('Synced') ? Colors.green : Colors.blue),
+              label: Text(_lastSyncStatus, style: const TextStyle(fontSize: 10)),
               backgroundColor: Colors.blue.shade50,
             ),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         Card(
           elevation: 2,
           color: const Color(0xFF0A2540),
           child: Padding(
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Available Physical Material in Store', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                const Text('Available Physical Material in Store', style: TextStyle(color: Colors.white70, fontSize: 12)),
                 const SizedBox(height: 4),
-                Text('$balance Total Pcs', style: const TextStyle(fontSize: 30, fontWeight: FontWeight.bold, color: Colors.white)),
+                Text('$bal Total Pcs', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
               ],
             ),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         Row(
           children: [
-            Expanded(
-              child: Card(
-                color: Colors.green.shade50,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Total Received', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                      Text('$received Pcs', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            Expanded(
-              child: Card(
-                color: Colors.teal.shade50,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Total Returned', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                      Text('$returned Pcs', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal)),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            Expanded(
-              child: Card(
-                color: Colors.orange.shade50,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Total Issued', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                      Text('$issued Pcs', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.orange)),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+            Expanded(child: Card(color: Colors.green.shade50, child: Padding(padding: const EdgeInsets.all(10), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('Total Received', style: TextStyle(fontSize: 11, color: Colors.grey)), Text('$rec Pcs', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 16))])))),
+            Expanded(child: Card(color: Colors.teal.shade50, child: Padding(padding: const EdgeInsets.all(10), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('Total Returned', style: TextStyle(fontSize: 11, color: Colors.grey)), Text('$ret Pcs', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal, fontSize: 16))])))),
+            Expanded(child: Card(color: Colors.orange.shade50, child: Padding(padding: const EdgeInsets.all(10), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('Total Issued', style: TextStyle(fontSize: 11, color: Colors.grey)), Text('$iss Pcs', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange, fontSize: 16))])))),
           ],
         ),
-        const SizedBox(height: 16),
-        const Text('Recent Activities', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0A2540))),
+        const SizedBox(height: 14),
+        const Text('Recent Activities', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF0A2540))),
         ...transactions.reversed.take(6).map((t) {
           IconData icon = t['type'] == 'RECEIVE' ? Icons.arrow_downward : (t['type'] == 'RETURN' ? Icons.assignment_return : Icons.arrow_upward);
           Color color = t['type'] == 'RECEIVE' ? Colors.green : (t['type'] == 'RETURN' ? Colors.teal : Colors.orange);
-
-          final schClass = t['pipeSch'] ?? t['itemClass'] ?? '';
-          final meters = (t['lengthMeters'] ?? 0) > 0 ? " | Length: ${t['lengthMeters']}m" : "";
-
+          final meters = (t['lengthMeters'] ?? 0) > 0 ? " (${t['lengthMeters']}m)" : "";
           return Card(
-            margin: const EdgeInsets.only(top: 8),
+            margin: const EdgeInsets.only(top: 6),
             child: ListTile(
-              leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), child: Icon(icon, color: color)),
-              title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}'),
-              subtitle: Text('Grade: ${t['pipeGrade']} | SCH/Class: $schClass\nQty: ${t['quantity']} Pcs$meters | Date: ${t['date']}'),
-              trailing: Chip(
-                label: Text(t['type'], style: const TextStyle(color: Colors.white, fontSize: 10)),
-                backgroundColor: color,
-              ),
+              leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), child: Icon(icon, color: color, size: 20)),
+              title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+              subtitle: Text('Grade: ${t['pipeGrade']} | SCH/Class: ${t['pipeSch'] ?? t['itemClass'] ?? ''}\nQty: ${t['quantity']} Pcs$meters | Date: ${t['date']}'),
+              trailing: Chip(label: Text(t['type'], style: const TextStyle(color: Colors.white, fontSize: 9)), backgroundColor: color),
             ),
           );
         }),
@@ -1101,266 +863,74 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  Widget _buildReceiving() {
-    final sizeCtrl = TextEditingController();
-    final gradeCtrl = TextEditingController();
-    final schCtrl = TextEditingController();
-    final qtyCtrl = TextEditingController();
-    final metersCtrl = TextEditingController();
-    final remarksCtrl = TextEditingController();
+  // Unified Clean Transaction Form for Receive, Issue, & Return
+  Widget _buildTransactionForm(String type) {
+    final isReceive = type == 'RECEIVE';
+    final isIssue = type == 'ISSUE';
+    final isReturn = type == 'RETURN';
 
-    String cat = categories.first;
-    String coat = coatingOptions.first;
-    final sortedLocs = _getSortedList(receivingLocations, pinnedLocations);
-    String rLoc = sortedLocs.isNotEmpty ? sortedLocs.first : 'Yard Receiving';
-    DateTime selectedDate = DateTime.now();
-
-    return StatefulBuilder(
-      builder: (context, setSub) {
-        final isElbowOrFlange = (cat == 'Elbow' || cat == 'Flange');
-        final isCutPiece = (cat == 'Cut Piece');
-
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            const Text('Stock Receiving Module', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF0A2540))),
-            const SizedBox(height: 12),
-
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8)),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Receiving Date (Auto-filled)', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                      Text(DateFormat('yyyy-MM-dd').format(selectedDate), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)),
-                    icon: const Icon(Icons.calendar_month, color: Colors.white, size: 16),
-                    label: const Text('Change Date', style: TextStyle(color: Colors.white, fontSize: 12)),
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: selectedDate,
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime(2100),
-                      );
-                      if (picked != null) setSub(() => selectedDate = picked);
-                    },
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            DropdownButtonFormField<String>(
-              value: cat,
-              items: _getSortedList(categories, pinnedCategories)
-                  .map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: (v) => setSub(() => cat = v!),
-              decoration: const InputDecoration(labelText: 'Item Category *'),
-            ),
-            const SizedBox(height: 8),
-
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Size (e.g. 24", 8") *')),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Grade (e.g. X52, A105) *')),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-
-            TextField(
-              controller: schCtrl,
-              decoration: InputDecoration(
-                labelText: isElbowOrFlange
-                    ? 'Class / Rating (e.g. 150#, 300#, 600#, 900#) *'
-                    : 'Pipe SCH (e.g. 12.7, SCH 80) *',
-              ),
-            ),
-            const SizedBox(height: 8),
-
-            DropdownButtonFormField<String>(
-              value: coat,
-              items: coatingOptions.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: (v) => setSub(() => coat = v!),
-              decoration: const InputDecoration(labelText: 'Internal Coating *'),
-            ),
-            const SizedBox(height: 8),
-
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: qtyCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Quantity (Pieces) *'),
-                  ),
-                ),
-                if (isCutPiece) ...[
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: metersCtrl,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Kul Length (Meters) *'),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-            const SizedBox(height: 8),
-
-            DropdownButtonFormField<String>(
-              value: rLoc,
-              items: sortedLocs.map((l) => DropdownMenuItem(value: l, child: Text(l))).toList(),
-              onChanged: (v) => setSub(() => rLoc = v!),
-              decoration: const InputDecoration(labelText: 'Receiving Location *'),
-            ),
-            const SizedBox(height: 8),
-
-            TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Remarks / Heat Number')),
-            const SizedBox(height: 20),
-
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF0A2540),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-              onPressed: () async {
-                if (qtyCtrl.text.isEmpty || sizeCtrl.text.isEmpty || gradeCtrl.text.isEmpty || schCtrl.text.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill all mandatory fields!')));
-                  return;
-                }
-
-                final authorized = await _authenticateAction('Add Receiving Entry');
-                if (!authorized) return;
-
-                final qtyVal = double.parse(qtyCtrl.text);
-                final metersVal = double.tryParse(metersCtrl.text) ?? 0.0;
-
-                setState(() {
-                  transactions.add({
-                    'id': const Uuid().v4(),
-                    'type': 'RECEIVE',
-                    'category': cat,
-                    'pipeSize': sizeCtrl.text.trim(),
-                    'pipeGrade': gradeCtrl.text.trim(),
-                    'pipeSch': schCtrl.text.trim(),
-                    'itemClass': isElbowOrFlange ? schCtrl.text.trim() : '',
-                    'internalCoating': coat,
-                    'quantity': qtyVal,
-                    'lengthMeters': metersVal,
-                    'entity': rLoc,
-                    'date': DateFormat('yyyy-MM-dd').format(selectedDate),
-                    'remarks': remarksCtrl.text.trim(),
-                  });
-                });
-                _saveData();
-                _syncWithCloud(silent: true);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Material Received & Saved!')));
-                  setState(() => _navIndex = 0);
-                }
-              },
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.lock, color: Colors.white, size: 18),
-                  SizedBox(width: 8),
-                  Text('AUTHORIZE & SUBMIT RECEIVING', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                ],
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildIssuing() {
     final sizeCtrl = TextEditingController();
     final gradeCtrl = TextEditingController();
     final schCtrl = TextEditingController();
     final qtyCtrl = TextEditingController();
     final metersCtrl = TextEditingController();
     final personCtrl = TextEditingController();
+    final remarksCtrl = TextEditingController();
 
     String cat = categories.first;
     String coat = coatingOptions.first;
-    final sortedLocs = _getSortedList(issueLocations, pinnedLocations);
-    String loc = sortedLocs.isNotEmpty ? sortedLocs.first : 'Yard 1';
-    final sortedJps = _getSortedList(jpNames, pinnedJpNames);
-    String jp = sortedJps.isNotEmpty ? sortedJps.first : 'JP-1';
     DateTime selectedDate = DateTime.now();
+
+    final sortedRecLocs = _getSortedList(receivingLocations, pinnedLocations);
+    final sortedIssLocs = _getSortedList(issueLocations, pinnedLocations);
+    final sortedJps = _getSortedList(jpNames, pinnedJpNames);
+
+    String rLoc = sortedRecLocs.isNotEmpty ? sortedRecLocs.first : 'Yard Receiving';
+    String iLoc = sortedIssLocs.isNotEmpty ? sortedIssLocs.first : 'Yard 1';
+    String jp = sortedJps.isNotEmpty ? sortedJps.first : 'JP-1';
+
+    Color themeColor = isReceive ? const Color(0xFF0A2540) : (isReturn ? Colors.teal : const Color(0xFFF25F22));
 
     return StatefulBuilder(
       builder: (context, setSub) {
+        final isElbowOrFlange = (cat == 'Elbow' || cat == 'Flange');
+        final isCutPiece = (cat == 'Cut Piece');
         final curSize = sizeCtrl.text.trim();
         final curGrade = gradeCtrl.text.trim();
         final curSch = schCtrl.text.trim();
 
-        final totalAvail = _getTotalAvailableToIssue(curSize, curGrade, curSch, cat, coat);
-        final readyInYard = _getPhysicalStockQty(curSize, curGrade, curSch, cat, coat);
-        final readyMeters = _getPhysicalStockMeters(curSize, curGrade, curSch, cat, coat);
-
-        final isPainted = (cat == 'Painting Pipe' || cat == 'Painting Bend');
-        final isElbowOrFlange = (cat == 'Elbow' || cat == 'Flange');
-        final isCutPiece = (cat == 'Cut Piece');
-        final parentName = (cat == 'Painting Pipe') ? 'Bare Pipe' : 'Bare Bend';
+        final totalAvail = isIssue ? _getTotalAvailableToIssue(curSize, curGrade, curSch, cat, coat) : 0.0;
+        final readyInYard = isIssue ? _getPhysicalStockQty(curSize, curGrade, curSch, cat, coat) : 0.0;
 
         return ListView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(14),
           children: [
-            const Text('Stock Issuing Module', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF0A2540))),
+            Text(isReceive ? 'Stock Receiving' : (isReturn ? 'Stock Return (Wapsi)' : 'Stock Issuing'), style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: themeColor)),
             const SizedBox(height: 8),
 
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(8)),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(color: themeColor.withOpacity(0.08), borderRadius: BorderRadius.circular(6)),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Issue Date (Auto-filled)', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                      Text(DateFormat('yyyy-MM-dd').format(selectedDate), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFF25F22)),
-                    icon: const Icon(Icons.calendar_month, color: Colors.white, size: 16),
-                    label: const Text('Change Date', style: TextStyle(color: Colors.white, fontSize: 12)),
+                  Text('Date: ${DateFormat('yyyy-MM-dd').format(selectedDate)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  TextButton.icon(
+                    icon: const Icon(Icons.calendar_month, size: 16),
+                    label: const Text('Change'),
                     onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: selectedDate,
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime(2100),
-                      );
-                      if (picked != null) setSub(() => selectedDate = picked);
+                      final p = await showDatePicker(context: context, initialDate: selectedDate, firstDate: DateTime(2000), lastDate: DateTime(2100));
+                      if (p != null) setSub(() => selectedDate = p);
                     },
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
 
             DropdownButtonFormField<String>(
               value: cat,
-              items: _getSortedList(categories, pinnedCategories)
-                  .map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+              items: _getSortedList(categories, pinnedCategories).map((c) => DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(fontSize: 13)))).toList(),
               onChanged: (v) => setSub(() => cat = v!),
               decoration: const InputDecoration(labelText: 'Item Category *'),
             ),
@@ -1377,113 +947,100 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
             TextField(
               controller: schCtrl,
-              decoration: InputDecoration(
-                labelText: isElbowOrFlange ? 'Class / Rating (Strict) *' : 'Pipe SCH (Strict) *',
-              ),
+              decoration: InputDecoration(labelText: isElbowOrFlange ? 'Class / Rating (Strict) *' : 'Pipe SCH (Strict) *'),
               onChanged: (_) => setSub(() {}),
             ),
             const SizedBox(height: 8),
 
             DropdownButtonFormField<String>(
               value: coat,
-              items: coatingOptions.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+              items: coatingOptions.map((c) => DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(fontSize: 13)))).toList(),
               onChanged: (v) => setSub(() => coat = v!),
               decoration: const InputDecoration(labelText: 'Coating *'),
             ),
-            const SizedBox(height: 10),
-
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: totalAvail > 0 ? Colors.green.shade50 : Colors.red.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: totalAvail > 0 ? Colors.green : Colors.red),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (curSize.isEmpty || curGrade.isEmpty) ...[
-                    const Text('Size aur Grade enter karein taake verified stock nazar aaye.', style: TextStyle(fontSize: 12, color: Colors.blueGrey)),
-                  ] else if (isPainted) ...[
-                    Text('Ready Painted in Yard: $readyInYard Pcs', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.teal)),
-                    Text('Total Available to Issue (Yard + $parentName): $totalAvail Pcs', style: TextStyle(fontWeight: FontWeight.bold, color: totalAvail > 0 ? Colors.green.shade800 : Colors.red.shade800)),
-                    Text('* Pehle yard ka ready pipe ($readyInYard Pcs) use hoga, baaqi $parentName se minus hoga.', style: const TextStyle(fontSize: 11, color: Colors.black87)),
-                  ] else ...[
-                    Text('Available Physical Stock in Yard: $totalAvail Pcs${isCutPiece ? " ($readyMeters Meters)" : ""}', style: TextStyle(fontWeight: FontWeight.bold, color: totalAvail > 0 ? Colors.green.shade800 : Colors.red.shade800)),
-                  ],
-                ],
-              ),
-            ),
             const SizedBox(height: 8),
+
+            if (isIssue) ...[
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: totalAvail > 0 ? Colors.green.shade50 : Colors.red.shade50, borderRadius: BorderRadius.circular(6)),
+                child: Text('Available: $totalAvail Pcs (Yard Ready: $readyInYard)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: totalAvail > 0 ? Colors.green.shade800 : Colors.red.shade800)),
+              ),
+              const SizedBox(height: 8),
+            ],
 
             Row(
               children: [
-                Expanded(
-                  child: TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity (Pieces) *'), onChanged: (_) => setSub(() {})),
-                ),
+                Expanded(child: TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity (Pieces) *'), onChanged: (_) => setSub(() {}))),
                 if (isCutPiece) ...[
                   const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(controller: metersCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Length (Meters) *')),
-                  ),
+                  Expanded(child: TextField(controller: metersCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Kul Length (Meters) *'))),
                 ],
               ],
             ),
             const SizedBox(height: 8),
 
-            TextField(controller: personCtrl, decoration: const InputDecoration(labelText: 'Issued To / Person Name *')),
-            const SizedBox(height: 8),
+            if (isReceive)
+              DropdownButtonFormField<String>(
+                value: rLoc,
+                items: sortedRecLocs.map((l) => DropdownMenuItem(value: l, child: Text(l))).toList(),
+                onChanged: (v) => setSub(() => rLoc = v!),
+                decoration: const InputDecoration(labelText: 'Receiving Location *'),
+              ),
 
-            DropdownButtonFormField<String>(
-              value: loc,
-              items: sortedLocs.map((l) => DropdownMenuItem(value: l, child: Text(l))).toList(),
-              onChanged: (v) => setSub(() => loc = v!),
-              decoration: const InputDecoration(labelText: 'Destination Location *'),
-            ),
-            const SizedBox(height: 8),
+            if (isIssue) ...[
+              TextField(controller: personCtrl, decoration: const InputDecoration(labelText: 'Issued To / Person *')),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: iLoc,
+                items: sortedIssLocs.map((l) => DropdownMenuItem(value: l, child: Text(l))).toList(),
+                onChanged: (v) => setSub(() => iLoc = v!),
+                decoration: const InputDecoration(labelText: 'Destination Location *'),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: jp,
+                items: sortedJps.map((j) => DropdownMenuItem(value: j, child: Text(j))).toList(),
+                onChanged: (v) => setSub(() => jp = v!),
+                decoration: const InputDecoration(labelText: 'JP Name *'),
+              ),
+            ],
 
-            DropdownButtonFormField<String>(
-              value: jp,
-              items: sortedJps.map((j) => DropdownMenuItem(value: j, child: Text(j))).toList(),
-              onChanged: (v) => setSub(() => jp = v!),
-              decoration: const InputDecoration(labelText: 'JP Name *'),
-            ),
-            const SizedBox(height: 20),
+            if (isReturn)
+              TextField(controller: personCtrl, decoration: const InputDecoration(labelText: 'Returned From (Site / Person) *')),
+
+            const SizedBox(height: 8),
+            TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Remarks')),
+            const SizedBox(height: 16),
 
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFF25F22), padding: const EdgeInsets.symmetric(vertical: 14)),
+              style: ElevatedButton.styleFrom(backgroundColor: themeColor, padding: const EdgeInsets.symmetric(vertical: 14)),
               onPressed: () async {
                 final s = sizeCtrl.text.trim();
                 final g = gradeCtrl.text.trim();
                 final sch = schCtrl.text.trim();
                 double req = double.tryParse(qtyCtrl.text) ?? 0;
-                double reqMeters = double.tryParse(metersCtrl.text) ?? 0.0;
+                double reqM = double.tryParse(metersCtrl.text) ?? 0.0;
 
                 if (s.isEmpty || g.isEmpty || req <= 0) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please enter valid fields!')));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill mandatory fields!')));
                   return;
                 }
 
-                final freshTotal = _getTotalAvailableToIssue(s, g, sch, cat, coat);
-                if (req > freshTotal) {
-                  showDialog(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('Insufficient Stock Blocked', style: TextStyle(color: Colors.red)),
-                      content: Text('Cannot issue $req pieces. Only $freshTotal available in store.'),
-                      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
-                    ),
-                  );
-                  return;
+                if (isIssue) {
+                  final fresh = _getTotalAvailableToIssue(s, g, sch, cat, coat);
+                  if (req > fresh) {
+                    showDialog(context: context, builder: (ctx) => AlertDialog(title: const Text('Insufficient Stock', style: TextStyle(color: Colors.red)), content: Text('Available only: $fresh Pcs'), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))]));
+                    return;
+                  }
                 }
 
-                final authorized = await _authenticateAction('Issue Material');
-                if (!authorized) return;
+                if (!await _authenticateAction('$type Material')) return;
 
                 setState(() {
                   transactions.add({
                     'id': const Uuid().v4(),
-                    'type': 'ISSUE',
+                    'type': type,
                     'category': cat,
                     'pipeSize': s,
                     'pipeGrade': g,
@@ -1491,179 +1048,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     'itemClass': isElbowOrFlange ? sch : '',
                     'internalCoating': coat,
                     'quantity': req,
-                    'lengthMeters': reqMeters,
-                    'entity': personCtrl.text.trim(),
-                    'location': loc,
-                    'jpName': jp,
-                    'date': DateFormat('yyyy-MM-dd').format(selectedDate),
-                    'remarks': isPainted ? 'Painted issue deduction' : '',
-                  });
-                });
-                _saveData();
-                _syncWithCloud(silent: true);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Authorized: $cat Issued Successfully!')));
-                  setState(() => _navIndex = 0);
-                }
-              },
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.lock, color: Colors.white, size: 18),
-                  SizedBox(width: 8),
-                  Text('AUTHORIZE & SUBMIT ISSUING', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                ],
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildReturning() {
-    final sizeCtrl = TextEditingController();
-    final gradeCtrl = TextEditingController();
-    final schCtrl = TextEditingController();
-    final qtyCtrl = TextEditingController();
-    final metersCtrl = TextEditingController();
-    final returnFromCtrl = TextEditingController();
-    final remarksCtrl = TextEditingController();
-
-    String cat = categories.first;
-    String coat = coatingOptions.first;
-    DateTime selectedDate = DateTime.now();
-
-    return StatefulBuilder(
-      builder: (context, setSub) {
-        final isElbowOrFlange = (cat == 'Elbow' || cat == 'Flange');
-        final isCutPiece = (cat == 'Cut Piece');
-
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            const Row(
-              children: [
-                Icon(Icons.assignment_return, color: Colors.teal, size: 26),
-                SizedBox(width: 8),
-                Text('Material Return (Site Wapsi)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.teal)),
-              ],
-            ),
-            const SizedBox(height: 6),
-            const Text('Returned pipes, elbows, aur flanges usi category ke ready stock mein add honge.', style: TextStyle(color: Colors.grey, fontSize: 13)),
-            const SizedBox(height: 12),
-
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(color: Colors.teal.shade50, borderRadius: BorderRadius.circular(8)),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Return Date (Auto-filled)', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                      Text(DateFormat('yyyy-MM-dd').format(selectedDate), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
-                    icon: const Icon(Icons.calendar_month, color: Colors.white, size: 16),
-                    label: const Text('Change Date', style: TextStyle(color: Colors.white, fontSize: 12)),
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: selectedDate,
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime(2100),
-                      );
-                      if (picked != null) setSub(() => selectedDate = picked);
-                    },
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            DropdownButtonFormField<String>(
-              value: cat,
-              items: _getSortedList(categories, pinnedCategories)
-                  .map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: (v) => setSub(() => cat = v!),
-              decoration: const InputDecoration(labelText: 'Item Category *'),
-            ),
-            const SizedBox(height: 8),
-
-            Row(
-              children: [
-                Expanded(child: TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Size *'))),
-                const SizedBox(width: 8),
-                Expanded(child: TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Grade *'))),
-              ],
-            ),
-            const SizedBox(height: 8),
-
-            TextField(
-              controller: schCtrl,
-              decoration: InputDecoration(
-                labelText: isElbowOrFlange ? 'Class / Rating (Strict) *' : 'Pipe SCH (Strict) *',
-              ),
-            ),
-            const SizedBox(height: 8),
-
-            DropdownButtonFormField<String>(
-              value: coat,
-              items: coatingOptions.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: (v) => setSub(() => coat = v!),
-              decoration: const InputDecoration(labelText: 'Coating *'),
-            ),
-            const SizedBox(height: 8),
-
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity (Pcs) Returned *')),
-                ),
-                if (isCutPiece) ...[
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(controller: metersCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Length (Meters) *')),
-                  ),
-                ],
-              ],
-            ),
-            const SizedBox(height: 8),
-
-            TextField(controller: returnFromCtrl, decoration: const InputDecoration(labelText: 'Returned From (Site / Person) *')),
-            const SizedBox(height: 8),
-
-            TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Reason for Return (Surplus / Complete)')),
-            const SizedBox(height: 20),
-
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 14)),
-              onPressed: () async {
-                if (qtyCtrl.text.isEmpty || sizeCtrl.text.isEmpty || gradeCtrl.text.isEmpty || returnFromCtrl.text.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill mandatory fields!')));
-                  return;
-                }
-
-                final authorized = await _authenticateAction('Add Return Entry');
-                if (!authorized) return;
-
-                setState(() {
-                  transactions.add({
-                    'id': const Uuid().v4(),
-                    'type': 'RETURN',
-                    'category': cat,
-                    'pipeSize': sizeCtrl.text.trim(),
-                    'pipeGrade': gradeCtrl.text.trim(),
-                    'pipeSch': schCtrl.text.trim(),
-                    'itemClass': isElbowOrFlange ? schCtrl.text.trim() : '',
-                    'internalCoating': coat,
-                    'quantity': double.parse(qtyCtrl.text),
-                    'lengthMeters': double.tryParse(metersCtrl.text) ?? 0.0,
-                    'entity': returnFromCtrl.text.trim(),
+                    'lengthMeters': reqM,
+                    'entity': isReceive ? rLoc : personCtrl.text.trim(),
+                    'location': isIssue ? iLoc : '',
+                    'jpName': isIssue ? jp : '',
                     'date': DateFormat('yyyy-MM-dd').format(selectedDate),
                     'remarks': remarksCtrl.text.trim(),
                   });
@@ -1671,18 +1059,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 _saveData();
                 _syncWithCloud(silent: true);
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Success: Returned $cat added back to yard stock!')));
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $cat $type successfully!')));
                   setState(() => _navIndex = 0);
                 }
               },
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.lock, color: Colors.white, size: 18),
-                  SizedBox(width: 8),
-                  Text('AUTHORIZE & ADD RETURN TO STOCK', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                ],
-              ),
+              child: Text('AUTHORIZE & SUBMIT $type', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ),
           ],
         );
@@ -1690,32 +1071,22 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // Stock Screen (Point 1, 2, 3)
   Widget _buildStock() {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
           child: Row(
             children: [
               Expanded(
                 child: TextField(
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(Icons.search),
-                    hintText: 'Search Grade, SCH, Size...',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                    contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
-                  ),
-                  onChanged: (val) => setState(() => _stockSearchQuery = val.trim().toLowerCase()),
+                  decoration: const InputDecoration(prefixIcon: Icon(Icons.search, size: 18), hintText: 'Search Grade, Class, Size, SCH...', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)),
+                  onChanged: (v) => setState(() => _stockSearchQuery = v.trim().toLowerCase()),
                 ),
               ),
               const SizedBox(width: 8),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)),
-                icon: const Icon(Icons.file_download, color: Colors.white, size: 16),
-                label: const Text('Export', style: TextStyle(color: Colors.white)),
-                onPressed: () => _showExportChoiceDialog('STOCK'),
-              ),
+              ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)), icon: const Icon(Icons.file_download, color: Colors.white, size: 16), label: const Text('Export', style: TextStyle(color: Colors.white)), onPressed: () => _showExportChoiceDialog('STOCK')),
             ],
           ),
         ),
@@ -1732,118 +1103,57 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 final s = (t['pipeSize'] ?? '').toString().trim();
                 final g = (t['pipeGrade'] ?? '').toString().trim();
                 final sch = (t['pipeSch'] ?? t['itemClass'] ?? '').toString().trim();
-                final key = '$s|$g|$sch';
-
-                if (_stockSearchQuery.isNotEmpty) {
-                  final match = s.toLowerCase().contains(_stockSearchQuery) ||
-                      g.toLowerCase().contains(_stockSearchQuery) ||
-                      sch.toLowerCase().contains(_stockSearchQuery);
-                  if (!match) continue;
-                }
-
-                if (!specMap.containsKey(key)) {
-                  specMap[key] = {'size': s, 'grade': g, 'sch': sch};
+                if (_stockSearchQuery.isEmpty || s.toLowerCase().contains(_stockSearchQuery) || g.toLowerCase().contains(_stockSearchQuery) || sch.toLowerCase().contains(_stockSearchQuery)) {
+                  specMap['$s|$g|$sch'] = {'size': s, 'grade': g, 'sch': sch};
                 }
               }
 
-              final relevantSpecs = specMap.values.where((spec) {
-                final s = spec['size']!;
-                final g = spec['grade']!;
-                final sch = spec['sch']!;
-                double cBal = _getPhysicalStockQty(s, g, sch, cat, 'Internal Coated');
-                double uBal = _getPhysicalStockQty(s, g, sch, cat, 'Without Internal Coating');
-                return (cBal > 0 || uBal > 0);
+              final relevant = specMap.values.where((spec) {
+                double c = _getPhysicalStockQty(spec['size']!, spec['grade']!, spec['sch']!, cat, 'Internal Coated');
+                double u = _getPhysicalStockQty(spec['size']!, spec['grade']!, spec['sch']!, cat, 'Without Internal Coating');
+                return (c > 0 || u > 0);
               }).toList();
 
               return Card(
-                margin: const EdgeInsets.only(bottom: 10),
-                elevation: 2,
+                margin: const EdgeInsets.only(bottom: 8),
                 child: ExpansionTile(
-                  initiallyExpanded: relevantSpecs.isNotEmpty,
+                  initiallyExpanded: relevant.isNotEmpty,
                   title: Row(
                     children: [
-                      Text(cat, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF0A2540))),
-                      if (isPainted) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(color: Colors.teal.shade50, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.teal)),
-                          child: const Text('Ready in Yard', style: TextStyle(fontSize: 10, color: Colors.teal, fontWeight: FontWeight.bold)),
-                        ),
-                      ],
+                      Text(cat, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0A2540))),
+                      if (isPainted) ...[const SizedBox(width: 6), Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1), decoration: BoxDecoration(color: Colors.teal.shade50, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.teal)), child: const Text('Ready in Yard', style: TextStyle(fontSize: 9, color: Colors.teal, fontWeight: FontWeight.bold)))],
                     ],
                   ),
-                  children: relevantSpecs.isEmpty
-                      ? [
-                          Padding(
-                            padding: const EdgeInsets.all(16.0),
-                            child: Text(
-                              isPainted
-                                  ? 'Abhi yard mein koi ready $cat nahi hai (Wapsi aane par yahan show hoga).'
-                                  : 'No material in stock under this category.',
-                              style: const TextStyle(color: Colors.grey),
-                            ),
-                          )
-                        ]
-                      : relevantSpecs.map((spec) {
-                          final size = spec['size']!;
-                          final grade = spec['grade']!;
-                          final sch = spec['sch']!;
-
-                          double cBal = _getPhysicalStockQty(size, grade, sch, cat, 'Internal Coated');
-                          double uBal = _getPhysicalStockQty(size, grade, sch, cat, 'Without Internal Coating');
-                          double cMeters = _getPhysicalStockMeters(size, grade, sch, cat, 'Internal Coated');
-                          double uMeters = _getPhysicalStockMeters(size, grade, sch, cat, 'Without Internal Coating');
+                  children: relevant.isEmpty
+                      ? [const Padding(padding: EdgeInsets.all(12.0), child: Text('No stock recorded.', style: TextStyle(color: Colors.grey, fontSize: 12)))]
+                      : relevant.map((spec) {
+                          final s = spec['size']!; final g = spec['grade']!; final sch = spec['sch']!;
+                          double c = _getPhysicalStockQty(s, g, sch, cat, 'Internal Coated');
+                          double u = _getPhysicalStockQty(s, g, sch, cat, 'Without Internal Coating');
+                          double cm = _getPhysicalStockMeters(s, g, sch, cat, 'Internal Coated');
+                          double um = _getPhysicalStockMeters(s, g, sch, cat, 'Without Internal Coating');
 
                           return Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.blueGrey.shade100)),
+                            margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.black12)),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Expanded(child: Text('Size: $size | Grade: $grade | ${isElbowOrFlange ? "Class" : "SCH"}: $sch', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)))),
-                                    Text(
-                                      isPainted ? 'In Yard: ${cBal + uBal}' : 'Available: ${cBal + uBal}',
-                                      style: TextStyle(fontWeight: FontWeight.bold, color: isPainted ? Colors.teal : Colors.blueAccent),
-                                    ),
-                                  ],
-                                ),
-                                if (isCutPiece) ...[
-                                  const SizedBox(height: 2),
-                                  Text('Kul Length: ${cMeters + uMeters} Meters', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.deepOrange)),
-                                ],
-                                const Divider(height: 14),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Row(
-                                      children: [
-                                        Icon(Icons.circle, size: 8, color: Colors.teal),
-                                        SizedBox(width: 6),
-                                        Text('Internal Coated:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
-                                      ],
-                                    ),
-                                    Text('$cBal Pcs${isCutPiece ? " ($cMeters m)" : ""}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: cBal > 0 ? Colors.green.shade800 : Colors.grey.shade600)),
-                                  ],
-                                ),
-                                const SizedBox(height: 6),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Row(
-                                      children: [
-                                        Icon(Icons.circle, size: 8, color: Colors.amber),
-                                        SizedBox(width: 6),
-                                        Text('Without Internal Coating:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
-                                      ],
-                                    ),
-                                    Text('$uBal Pcs${isCutPiece ? " ($uMeters m)" : ""}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: uBal > 0 ? Colors.green.shade800 : Colors.grey.shade600)),
-                                  ],
-                                ),
+                                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                                  Text('Size: $s | Grade: $g | ${isElbowOrFlange ? "Class" : "SCH"}: $sch', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                  Text('Total: ${c + u} Pcs', style: TextStyle(fontWeight: FontWeight.bold, color: isPainted ? Colors.teal : Colors.blueAccent)),
+                                ]),
+                                if (isCutPiece) Text('Length: ${cm + um} Meters', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.deepOrange)),
+                                const Divider(height: 10),
+                                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                                  const Text('Internal Coated:', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                                  Text('$c Pcs${isCutPiece ? " ($cm m)" : ""}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: c > 0 ? Colors.green.shade800 : Colors.grey)),
+                                ]),
+                                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                                  const Text('Without Coating:', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                                  Text('$u Pcs${isCutPiece ? " ($um m)" : ""}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: u > 0 ? Colors.green.shade800 : Colors.grey)),
+                                ]),
                               ],
                             ),
                           );
@@ -1857,6 +1167,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // History with Category Breakdown (Point 5)
   Widget _buildHistory() {
     final filtered = transactions.where((t) {
       if (_historyTypeFilter == 'RECEIVE' && t['type'] != 'RECEIVE') return false;
@@ -1865,122 +1176,83 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
       if (_historySearchQuery.isNotEmpty) {
         final q = _historySearchQuery;
-        final locMatch = (t['entity'] ?? '').toString().toLowerCase().contains(q) ||
-            (t['location'] ?? '').toString().toLowerCase().contains(q) ||
-            (t['jpName'] ?? '').toString().toLowerCase().contains(q);
-        final gradeMatch = (t['pipeGrade'] ?? '').toString().toLowerCase().contains(q);
-        final sizeMatch = (t['pipeSize'] ?? '').toString().toLowerCase().contains(q);
-        final schMatch = (t['pipeSch'] ?? t['itemClass'] ?? '').toString().toLowerCase().contains(q);
-        final catMatch = (t['category'] ?? '').toString().toLowerCase().contains(q);
-        final dateMatch = (t['date'] ?? '').toString().toLowerCase().contains(q);
-        final remarksMatch = (t['remarks'] ?? '').toString().toLowerCase().contains(q);
-
-        return locMatch || gradeMatch || sizeMatch || schMatch || catMatch || dateMatch || remarksMatch;
+        final loc = (t['entity'] ?? t['location'] ?? '').toString().toLowerCase();
+        final g = (t['pipeGrade'] ?? '').toString().toLowerCase();
+        final s = (t['pipeSize'] ?? '').toString().toLowerCase();
+        final sch = (t['pipeSch'] ?? t['itemClass'] ?? '').toString().toLowerCase();
+        final cat = (t['category'] ?? '').toString().toLowerCase();
+        final dt = (t['date'] ?? '').toString().toLowerCase();
+        return loc.contains(q) || g.contains(q) || s.contains(q) || sch.contains(q) || cat.contains(q) || dt.contains(q);
       }
       return true;
     }).toList();
 
     final Map<String, double> summaryTotals = {};
-    double cutPieceTotalMeters = 0.0;
+    double cpMeters = 0.0;
     for (var t in filtered) {
-      final cat = t['category'] ?? 'Other';
+      final c = t['category'] ?? 'Other';
       final q = (t['quantity'] as num?)?.toDouble() ?? 0.0;
-      summaryTotals[cat] = (summaryTotals[cat] ?? 0.0) + q;
-      if (cat == 'Cut Piece') {
-        cutPieceTotalMeters += (t['lengthMeters'] as num?)?.toDouble() ?? 0.0;
-      }
+      summaryTotals[c] = (summaryTotals[c] ?? 0.0) + q;
+      if (c == 'Cut Piece') cpMeters += (t['lengthMeters'] as num?)?.toDouble() ?? 0.0;
     }
 
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
           child: TextField(
             decoration: InputDecoration(
-              prefixIcon: const Icon(Icons.search),
-              hintText: 'Search Location, Grade, Class, Size, SCH...',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-              contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
-              suffixIcon: _historySearchQuery.isNotEmpty
-                  ? IconButton(icon: const Icon(Icons.clear), onPressed: () => setState(() => _historySearchQuery = ''))
-                  : null,
+              prefixIcon: const Icon(Icons.search, size: 18),
+              hintText: 'Search Location, Grade, Class, Size...',
+              border: const OutlineInputBorder(),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+              suffixIcon: _historySearchQuery.isNotEmpty ? IconButton(icon: const Icon(Icons.clear, size: 16), onPressed: () => setState(() => _historySearchQuery = '')) : null,
             ),
-            onChanged: (val) => setState(() => _historySearchQuery = val.trim().toLowerCase()),
+            onChanged: (v) => setState(() => _historySearchQuery = v.trim().toLowerCase()),
           ),
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                FilterChip(
-                  label: const Text('All (Both)'),
-                  selected: _historyTypeFilter == 'ALL',
-                  selectedColor: Colors.blue.shade100,
-                  onSelected: (_) => setState(() => _historyTypeFilter = 'ALL'),
-                ),
-                const SizedBox(width: 6),
-                FilterChip(
-                  label: const Text('Receiving'),
-                  selected: _historyTypeFilter == 'RECEIVE',
-                  selectedColor: Colors.green.shade100,
-                  onSelected: (_) => setState(() => _historyTypeFilter = 'RECEIVE'),
-                ),
-                const SizedBox(width: 6),
-                FilterChip(
-                  label: const Text('Issuing'),
-                  selected: _historyTypeFilter == 'ISSUE',
-                  selectedColor: Colors.orange.shade100,
-                  onSelected: (_) => setState(() => _historyTypeFilter = 'ISSUE'),
-                ),
-                const SizedBox(width: 6),
-                FilterChip(
-                  label: const Text('Returns'),
-                  selected: _historyTypeFilter == 'RETURN',
-                  selectedColor: Colors.teal.shade100,
-                  onSelected: (_) => setState(() => _historyTypeFilter = 'RETURN'),
-                ),
+                FilterChip(label: const Text('All'), selected: _historyTypeFilter == 'ALL', onSelected: (_) => setState(() => _historyTypeFilter = 'ALL')),
+                const SizedBox(width: 4),
+                FilterChip(label: const Text('Receiving'), selected: _historyTypeFilter == 'RECEIVE', onSelected: (_) => setState(() => _historyTypeFilter = 'RECEIVE')),
+                const SizedBox(width: 4),
+                FilterChip(label: const Text('Issuing'), selected: _historyTypeFilter == 'ISSUE', onSelected: (_) => setState(() => _historyTypeFilter = 'ISSUE')),
+                const SizedBox(width: 4),
+                FilterChip(label: const Text('Returns'), selected: _historyTypeFilter == 'RETURN', onSelected: (_) => setState(() => _historyTypeFilter = 'RETURN')),
               ],
             ),
           ),
         ),
 
+        // Live Category Breakdown (Point 5)
         if (summaryTotals.isNotEmpty)
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.blueGrey.shade50,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.blueGrey.shade200),
-            ),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(color: Colors.blueGrey.shade50, borderRadius: BorderRadius.circular(6)),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Search Results Summary (${filtered.length} entries):', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF0A2540))),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2)),
-                      icon: const Icon(Icons.file_download, color: Colors.white, size: 14),
-                      label: const Text('Export Excel/PDF', style: TextStyle(color: Colors.white, fontSize: 11)),
-                      onPressed: () => _showExportChoiceDialog(_historyTypeFilter, customList: filtered),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  Text('Search Results (${filtered.length} entries):', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2)),
+                    icon: const Icon(Icons.file_download, color: Colors.white, size: 12),
+                    label: const Text('Excel/PDF', style: TextStyle(color: Colors.white, fontSize: 10)),
+                    onPressed: () => _showExportChoiceDialog(_historyTypeFilter, customList: filtered),
+                  ),
+                ]),
+                const SizedBox(height: 4),
                 Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
+                  spacing: 4,
                   children: summaryTotals.entries.map((e) {
                     final isCp = e.key == 'Cut Piece';
-                    return Chip(
-                      visualDensity: VisualDensity.compact,
-                      label: Text('${e.key}: ${e.value.toStringAsFixed(0)} Pcs${isCp ? " ($cutPieceTotalMeters m)" : ""}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                      backgroundColor: Colors.white,
-                    );
+                    return Chip(visualDensity: VisualDensity.compact, label: Text('${e.key}: ${e.value.toStringAsFixed(0)} Pcs${isCp ? " ($cpMeters m)" : ""}', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)));
                   }).toList(),
                 ),
               ],
@@ -1989,30 +1261,27 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
         Expanded(
           child: filtered.isEmpty
-              ? const Center(child: Text('No matching records found.'))
+              ? const Center(child: Text('No records found.'))
               : ListView.builder(
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
                     final t = filtered[index];
                     final tId = t['id'];
-
-                    IconData icon = t['type'] == 'RECEIVE' ? Icons.download : (t['type'] == 'RETURN' ? Icons.assignment_return : Icons.upload);
+                    IconData icon = t['type'] == 'RECEIVE' ? Icons.arrow_downward : (t['type'] == 'RETURN' ? Icons.assignment_return : Icons.arrow_upward);
                     Color color = t['type'] == 'RECEIVE' ? Colors.green : (t['type'] == 'RETURN' ? Colors.teal : Colors.orange);
-
-                    final schClass = t['pipeSch'] ?? t['itemClass'] ?? '';
-                    final meters = (t['lengthMeters'] ?? 0) > 0 ? " | Length: ${t['lengthMeters']}m" : "";
+                    final meters = (t['lengthMeters'] ?? 0) > 0 ? " (${t['lengthMeters']}m)" : "";
 
                     return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
                       child: ListTile(
-                        leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), child: Icon(icon, color: color)),
-                        title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}'),
-                        subtitle: Text('Grade: ${t['pipeGrade']} | SCH/Class: $schClass\nQty: ${t['quantity']} Pcs$meters | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}${t['jpName'] != null ? ' | JP: ${t['jpName']}' : ''}'),
+                        leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), radius: 18, child: Icon(icon, color: color, size: 16)),
+                        title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                        subtitle: Text('Grade: ${t['pipeGrade']} | SCH/Class: ${t['pipeSch'] ?? t['itemClass'] ?? ''}\nQty: ${t['quantity']} Pcs$meters | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}${t['jpName'] != null ? ' | JP: ${t['jpName']}' : ''}', style: const TextStyle(fontSize: 11)),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            IconButton(icon: const Icon(Icons.edit, color: Colors.blue), tooltip: 'Edit', onPressed: () => _editTransactionById(tId)),
-                            IconButton(icon: const Icon(Icons.delete, color: Colors.red), tooltip: 'Delete', onPressed: () => _deleteTransactionById(tId)),
+                            IconButton(icon: const Icon(Icons.edit, color: Colors.blue, size: 18), onPressed: () => _editTransactionById(tId)),
+                            IconButton(icon: const Icon(Icons.delete, color: Colors.red, size: 18), onPressed: () => _deleteTransactionById(tId)),
                           ],
                         ),
                       ),
@@ -2024,6 +1293,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // Settings & Management (Points 6, 7, 8, 9)
   Widget _buildManageAndBackup() {
     final rLocCtrl = TextEditingController();
     final iLocCtrl = TextEditingController();
@@ -2033,337 +1303,196 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     final cloudIdCtrl = TextEditingController(text: _cloudStoreId);
 
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text('Security & Management', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF0A2540))),
-            IconButton(
-              icon: const Icon(Icons.lock, color: Colors.red),
-              tooltip: 'Lock Settings Again',
-              onPressed: () {
-                setState(() {
-                  _isSettingsUnlocked = false;
-                  _navIndex = 0;
-                });
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings Locked!')));
-              },
-            ),
-          ],
-        ),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          const Text('Settings & Database', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0A2540))),
+          IconButton(icon: const Icon(Icons.lock, color: Colors.red), tooltip: 'Lock', onPressed: () { setState(() { _isSettingsUnlocked = false; _navIndex = 0; }); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings Locked!'))); }),
+        ]),
         const SizedBox(height: 6),
 
-        Card(
-          color: Colors.blue.shade50,
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('Google Firebase Realtime Sync', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                    Text(_lastSyncStatus, style: TextStyle(fontSize: 11, color: _lastSyncStatus.startsWith('Synced') ? Colors.green.shade800 : Colors.blue.shade800, fontWeight: FontWeight.bold)),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                const Text('Apna Google Firebase URL yahan paste karein taake Mobile aur PC ka data shared rahe.'),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: firebaseUrlCtrl,
-                  decoration: const InputDecoration(labelText: 'Firebase URL', border: OutlineInputBorder(), hintText: 'https://...firebaseio.com'),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(controller: cloudIdCtrl, decoration: const InputDecoration(labelText: 'Store Key', border: OutlineInputBorder())),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)),
-                      onPressed: () {
-                        setState(() {
-                          _firebaseUrl = firebaseUrlCtrl.text.trim();
-                          _cloudStoreId = cloudIdCtrl.text.trim();
-                        });
-                        _saveData();
-                        _syncWithCloud(silent: false);
-                      },
-                      child: const Text('Save & Connect', style: TextStyle(color: Colors.white)),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-        const Divider(height: 28),
-
+        // Category Priority Pinning (Point 2)
         Card(
           color: Colors.amber.shade50,
           child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Master PIN Security', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                    Text('Current PIN: $_securityPin', style: const TextStyle(color: Colors.black87)),
-                  ],
-                ),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)),
-                  icon: const Icon(Icons.pin, color: Colors.white, size: 16),
-                  label: const Text('Change PIN', style: TextStyle(color: Colors.white)),
-                  onPressed: () {
-                    final oldPinCtrl = TextEditingController();
-                    final newPinCtrl = TextEditingController();
-                    String errorTxt = '';
-
-                    showDialog(
-                      context: context,
-                      builder: (ctx) => StatefulBuilder(
-                        builder: (context, setDState) => AlertDialog(
-                          title: const Text('Change Security PIN'),
-                          content: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              TextField(controller: oldPinCtrl, obscureText: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Current PIN')),
-                              const SizedBox(height: 8),
-                              TextField(controller: newPinCtrl, obscureText: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'New PIN')),
-                              if (errorTxt.isNotEmpty) ...[const SizedBox(height: 8), Text(errorTxt, style: const TextStyle(color: Colors.red))],
-                            ],
-                          ),
-                          actions: [
-                            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                            ElevatedButton(
-                              onPressed: () {
-                                if (oldPinCtrl.text.trim() != _securityPin.trim()) {
-                                  setDState(() => errorTxt = 'Current PIN is incorrect!');
-                                  return;
-                                }
-                                if (newPinCtrl.text.trim().isEmpty) {
-                                  setDState(() => errorTxt = 'Enter valid new PIN!');
-                                  return;
-                                }
-                                setState(() => _securityPin = newPinCtrl.text.trim());
-                                _saveData();
-                                Navigator.pop(ctx);
-                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PIN Updated!')));
-                              },
-                              child: const Text('Update PIN'),
-                            ),
-                          ],
-                        ),
-                      ),
+                const Row(children: [Icon(Icons.star, color: Colors.amber, size: 20), SizedBox(width: 6), Text('Category Dropdown Priority (Pin ⭐ to Top)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))]),
+                const SizedBox(height: 4),
+                const Text('Jis category par tap karenge wo dropdown mein sab se pehle number par aayegi:', style: TextStyle(fontSize: 11)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  children: categories.map((c) {
+                    final isPin = pinnedCategories.contains(c);
+                    return FilterChip(
+                      avatar: Icon(isPin ? Icons.star : Icons.star_border, size: 14, color: isPin ? Colors.amber.shade900 : Colors.grey),
+                      label: Text(c, style: TextStyle(fontSize: 11, fontWeight: isPin ? FontWeight.bold : FontWeight.normal)),
+                      selected: isPin,
+                      onSelected: (val) {
+                        setState(() { val ? pinnedCategories.add(c) : pinnedCategories.remove(c); });
+                        _saveData();
+                      },
                     );
-                  },
+                  }).toList(),
                 ),
               ],
             ),
           ),
         ),
-        const Divider(height: 28),
+        const Divider(height: 20),
 
-        const Text('Backup & Data Protection', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        // Firebase Sync
+        Card(
+          color: Colors.blue.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Firebase Cloud Sync', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)), Text(_lastSyncStatus, style: TextStyle(fontSize: 10, color: _lastSyncStatus.startsWith('Synced') ? Colors.green.shade800 : Colors.blue))]),
+                const SizedBox(height: 6),
+                TextField(controller: firebaseUrlCtrl, decoration: const InputDecoration(labelText: 'Firebase URL', border: OutlineInputBorder(), hintText: 'https://...firebaseio.com')),
+                const SizedBox(height: 6),
+                Row(children: [
+                  Expanded(child: TextField(controller: cloudIdCtrl, decoration: const InputDecoration(labelText: 'Branch Key', border: OutlineInputBorder()))),
+                  const SizedBox(width: 8),
+                  ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)), onPressed: () { setState(() { _firebaseUrl = firebaseUrlCtrl.text.trim(); _cloudStoreId = cloudIdCtrl.text.trim(); }); _saveData(); _syncWithCloud(silent: false); }, child: const Text('Connect', style: TextStyle(color: Colors.white))),
+                ]),
+              ],
+            ),
+          ),
+        ),
+        const Divider(height: 20),
+
+        // PIN Security
+        Card(
+          color: Colors.amber.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('Master PIN Security', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)), Text('Current: $_securityPin', style: const TextStyle(fontSize: 11))]),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)),
+                onPressed: () {
+                  final oCtrl = TextEditingController(); final nCtrl = TextEditingController();
+                  showDialog(context: context, builder: (ctx) => AlertDialog(
+                    title: const Text('Change PIN'),
+                    content: Column(mainAxisSize: MainAxisSize.min, children: [
+                      TextField(controller: oCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'Current PIN')),
+                      TextField(controller: nCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'New PIN')),
+                    ]),
+                    actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')), ElevatedButton(onPressed: () { if (oCtrl.text.trim() == _securityPin.trim() && nCtrl.text.trim().isNotEmpty) { setState(() => _securityPin = nCtrl.text.trim()); _saveData(); Navigator.pop(ctx); } }, child: const Text('Save'))],
+                  ));
+                },
+                child: const Text('Change', style: TextStyle(color: Colors.white)),
+              ),
+            ]),
+          ),
+        ),
+        const Divider(height: 20),
+
+        // Backup
+        const Text('Backup & Data Protection', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         Card(
           color: Colors.green.shade50,
           child: Padding(
-            padding: const EdgeInsets.all(16.0),
+            padding: const EdgeInsets.all(12.0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Daily Auto-Backup Active', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-                const Text('App rozana pehli entry par automatically date ke hisab se backup file save karti hai.', style: TextStyle(fontSize: 12)),
-                const SizedBox(height: 10),
+                const Text('Daily Auto-Backup Active', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 12)),
+                const SizedBox(height: 6),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)),
-                  icon: const Icon(Icons.download, color: Colors.white, size: 16),
-                  label: const Text('EXPORT MANUAL BACKUP', style: TextStyle(color: Colors.white)),
+                  icon: const Icon(Icons.download, color: Colors.white, size: 14),
+                  label: const Text('Export Backup File', style: TextStyle(color: Colors.white)),
                   onPressed: () async {
-                    final payload = {
-                      'timestamp': DateTime.now().toIso8601String(),
-                      'transactions': transactions,
-                      'receivingLocations': receivingLocations,
-                      'issueLocations': issueLocations,
-                      'jpNames': jpNames,
-                      'securityPin': _securityPin,
-                    };
-                    final jsonStr = jsonEncode(payload);
-                    Clipboard.setData(ClipboardData(text: jsonStr));
-
                     final dir = await getApplicationDocumentsDirectory();
-                    final bFile = File('${dir.path}/pipe_backup_${DateTime.now().millisecondsSinceEpoch}.json');
-                    await bFile.writeAsString(jsonStr);
-
-                    showDialog(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('Backup Created!'),
-                        content: Text('File saved at:\n${bFile.path}\n\nData clipboard mein copy ho gaya hai!'),
-                        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
-                      ),
-                    );
+                    final bFile = File('${dir.path}/SOFS_Backup_${DateTime.now().millisecondsSinceEpoch}.json');
+                    final str = jsonEncode({'timestamp': DateTime.now().toIso8601String(), 'transactions': transactions, 'receivingLocations': receivingLocations, 'issueLocations': issueLocations, 'jpNames': jpNames, 'securityPin': _securityPin});
+                    await bFile.writeAsString(str);
+                    Clipboard.setData(ClipboardData(text: str));
+                    if (mounted) showDialog(context: context, builder: (ctx) => AlertDialog(title: const Text('Backup Saved!'), content: Text('File:\n${bFile.path}\n\nClipboard mein bhi copy ho gaya hai.'), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))]));
                   },
                 ),
                 const SizedBox(height: 8),
                 TextField(controller: restoreTextCtrl, maxLines: 2, decoration: const InputDecoration(hintText: 'Paste backup JSON to restore...', border: OutlineInputBorder())),
-                const SizedBox(height: 8),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
-                  icon: const Icon(Icons.restore, color: Colors.white),
-                  label: const Text('RESTORE DATA FROM TEXT', style: TextStyle(color: Colors.white)),
-                  onPressed: () async {
-                    if (restoreTextCtrl.text.isEmpty) return;
-                    final authorized = await _authenticateAction('Restore Database');
-                    if (!authorized) return;
-
-                    try {
-                      final data = jsonDecode(restoreTextCtrl.text.trim());
-                      setState(() {
-                        if (data['transactions'] != null) transactions = List<Map<String, dynamic>>.from(data['transactions']);
-                        if (data['receivingLocations'] != null) receivingLocations = List<String>.from(data['receivingLocations']);
-                        if (data['issueLocations'] != null) issueLocations = List<String>.from(data['issueLocations']);
-                        if (data['jpNames'] != null) jpNames = List<String>.from(data['jpNames']);
-                      });
-                      _saveData();
-                      _syncWithCloud(silent: true);
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Data Restored Successfully!')));
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid Backup Data!')));
-                    }
-                  },
-                ),
+                const SizedBox(height: 6),
+                ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800), onPressed: () async {
+                  if (restoreTextCtrl.text.isEmpty || !await _authenticateAction('Restore')) return;
+                  try {
+                    final data = jsonDecode(restoreTextCtrl.text.trim());
+                    setState(() {
+                      if (data['transactions'] != null) transactions = List<Map<String, dynamic>>.from(data['transactions']);
+                      if (data['receivingLocations'] != null) receivingLocations = List<String>.from(data['receivingLocations']);
+                      if (data['issueLocations'] != null) issueLocations = List<String>.from(data['issueLocations']);
+                      if (data['jpNames'] != null) jpNames = List<String>.from(data['jpNames']);
+                    });
+                    _saveData();
+                    _syncWithCloud(silent: true);
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Restored Successfully!')));
+                  } catch (_) {}
+                }, child: const Text('Restore from Text', style: TextStyle(color: Colors.white))),
               ],
             ),
           ),
         ),
-        const Divider(height: 28),
+        const Divider(height: 20),
 
-        const Text('Receiving Locations (Pin ⭐ to Top / Edit)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        Row(
-          children: [
-            Expanded(child: TextField(controller: rLocCtrl, decoration: const InputDecoration(labelText: 'New Location'))),
-            IconButton(
-              icon: const Icon(Icons.add_circle, color: Colors.blue, size: 30),
-              onPressed: () {
-                if (rLocCtrl.text.isNotEmpty) {
-                  setState(() => receivingLocations.add(rLocCtrl.text.trim()));
-                  _saveData();
-                  rLocCtrl.clear();
-                }
-              },
-            ),
-          ],
-        ),
-        Wrap(
-          spacing: 8,
-          children: receivingLocations.map((l) {
-            final isPinned = pinnedLocations.contains(l);
-            return InputChip(
-              avatar: Icon(isPinned ? Icons.star : Icons.star_border, size: 16, color: Colors.amber.shade900),
-              label: Text(l),
-              onPressed: () {
-                setState(() {
-                  if (isPinned) {
-                    pinnedLocations.remove(l);
-                  } else {
-                    pinnedLocations.add(l);
-                  }
-                });
-                _saveData();
-              },
-              deleteIcon: const Icon(Icons.edit, size: 16),
-              onDeleted: () => _renameLocationOrJpDialog(isLocation: true, oldName: l),
-            );
-          }).toList(),
-        ),
-        const Divider(height: 24),
+        // Locations & JPs (Pin ⭐ & Bulk Rename)
+        const Text('Receiving Locations (Pin ⭐ / Edit)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+        Row(children: [
+          Expanded(child: TextField(controller: rLocCtrl, decoration: const InputDecoration(labelText: 'New Location'))),
+          IconButton(icon: const Icon(Icons.add_circle, color: Colors.blue), onPressed: () { if (rLocCtrl.text.isNotEmpty) { setState(() => receivingLocations.add(rLocCtrl.text.trim())); _saveData(); rLocCtrl.clear(); } }),
+        ]),
+        Wrap(spacing: 6, children: receivingLocations.map((l) {
+          final isP = pinnedLocations.contains(l);
+          return InputChip(
+            avatar: Icon(isP ? Icons.star : Icons.star_border, size: 14, color: Colors.amber.shade900),
+            label: Text(l, style: const TextStyle(fontSize: 11)),
+            onPressed: () { setState(() { isP ? pinnedLocations.remove(l) : pinnedLocations.add(l); }); _saveData(); },
+            deleteIcon: const Icon(Icons.edit, size: 14),
+            onDeleted: () => _renameLocationOrJpDialog(isLocation: true, oldName: l),
+          );
+        }).toList()),
+        const Divider(height: 16),
 
-        const Text('Issue Locations (Pin ⭐ to Top / Edit)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        Row(
-          children: [
-            Expanded(child: TextField(controller: iLocCtrl, decoration: const InputDecoration(labelText: 'New Destination'))),
-            IconButton(
-              icon: const Icon(Icons.add_circle, color: Colors.green, size: 30),
-              onPressed: () {
-                if (iLocCtrl.text.isNotEmpty) {
-                  setState(() => issueLocations.add(iLocCtrl.text.trim()));
-                  _saveData();
-                  iLocCtrl.clear();
-                }
-              },
-            ),
-          ],
-        ),
-        Wrap(
-          spacing: 8,
-          children: issueLocations.map((l) {
-            final isPinned = pinnedLocations.contains(l);
-            return InputChip(
-              avatar: Icon(isPinned ? Icons.star : Icons.star_border, size: 16, color: Colors.amber.shade900),
-              label: Text(l),
-              onPressed: () {
-                setState(() {
-                  if (isPinned) {
-                    pinnedLocations.remove(l);
-                  } else {
-                    pinnedLocations.add(l);
-                  }
-                });
-                _saveData();
-              },
-              deleteIcon: const Icon(Icons.edit, size: 16),
-              onDeleted: () => _renameLocationOrJpDialog(isLocation: true, oldName: l),
-            );
-          }).toList(),
-        ),
-        const Divider(height: 24),
+        const Text('Issue Locations (Pin ⭐ / Edit)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+        Row(children: [
+          Expanded(child: TextField(controller: iLocCtrl, decoration: const InputDecoration(labelText: 'New Destination'))),
+          IconButton(icon: const Icon(Icons.add_circle, color: Colors.green), onPressed: () { if (iLocCtrl.text.isNotEmpty) { setState(() => issueLocations.add(iLocCtrl.text.trim())); _saveData(); iLocCtrl.clear(); } }),
+        ]),
+        Wrap(spacing: 6, children: issueLocations.map((l) {
+          final isP = pinnedLocations.contains(l);
+          return InputChip(
+            avatar: Icon(isP ? Icons.star : Icons.star_border, size: 14, color: Colors.amber.shade900),
+            label: Text(l, style: const TextStyle(fontSize: 11)),
+            onPressed: () { setState(() { isP ? pinnedLocations.remove(l) : pinnedLocations.add(l); }); _saveData(); },
+            deleteIcon: const Icon(Icons.edit, size: 14),
+            onDeleted: () => _renameLocationOrJpDialog(isLocation: true, oldName: l),
+          );
+        }).toList()),
+        const Divider(height: 16),
 
-        const Text('JP Names (Pin ⭐ to Top / Edit)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        Row(
-          children: [
-            Expanded(child: TextField(controller: jpCtrl, decoration: const InputDecoration(labelText: 'New JP Name'))),
-            IconButton(
-              icon: const Icon(Icons.add_circle, color: Colors.orange, size: 30),
-              onPressed: () {
-                if (jpCtrl.text.isNotEmpty) {
-                  setState(() => jpNames.add(jpCtrl.text.trim()));
-                  _saveData();
-                  jpCtrl.clear();
-                }
-              },
-            ),
-          ],
-        ),
-        Wrap(
-          spacing: 8,
-          children: jpNames.map((j) {
-            final isPinned = pinnedJpNames.contains(j);
-            return InputChip(
-              avatar: Icon(isPinned ? Icons.star : Icons.star_border, size: 16, color: Colors.amber.shade900),
-              label: Text(j),
-              onPressed: () {
-                setState(() {
-                  if (isPinned) {
-                    pinnedJpNames.remove(j);
-                  } else {
-                    pinnedJpNames.add(j);
-                  }
-                });
-                _saveData();
-              },
-              deleteIcon: const Icon(Icons.edit, size: 16),
-              onDeleted: () => _renameLocationOrJpDialog(isLocation: false, oldName: j),
-            );
-          }).toList(),
-        ),
+        const Text('JP Names (Pin ⭐ / Edit)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+        Row(children: [
+          Expanded(child: TextField(controller: jpCtrl, decoration: const InputDecoration(labelText: 'New JP Name'))),
+          IconButton(icon: const Icon(Icons.add_circle, color: Colors.orange), onPressed: () { if (jpCtrl.text.isNotEmpty) { setState(() => jpNames.add(jpCtrl.text.trim())); _saveData(); jpCtrl.clear(); } }),
+        ]),
+        Wrap(spacing: 6, children: jpNames.map((j) {
+          final isP = pinnedJpNames.contains(j);
+          return InputChip(
+            avatar: Icon(isP ? Icons.star : Icons.star_border, size: 14, color: Colors.amber.shade900),
+            label: Text(j, style: const TextStyle(fontSize: 11)),
+            onPressed: () { setState(() { isP ? pinnedJpNames.remove(j) : pinnedJpNames.add(j); }); _saveData(); },
+            deleteIcon: const Icon(Icons.edit, size: 14),
+            onDeleted: () => _renameLocationOrJpDialog(isLocation: false, oldName: j),
+          );
+        }).toList()),
       ],
     );
   }
