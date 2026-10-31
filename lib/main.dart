@@ -1,5 +1,5 @@
 // ==========================================
-// PART 1 (Start se yahan tak copy karein)
+// PART 1 OF 3 (Start of Application & Logic)
 // ==========================================
 
 import 'dart:convert';
@@ -89,14 +89,61 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   DateTime? _historyEndDate;
   String? _highlightedTxId;
 
+  // Stable Form Controllers
+  final TextEditingController _formSizeCtrl = TextEditingController();
+  final TextEditingController _formGradeCtrl = TextEditingController();
+  final TextEditingController _formSchCtrl = TextEditingController();
+  final TextEditingController _formQtyCtrl = TextEditingController();
+  final TextEditingController _formMetersCtrl = TextEditingController();
+  final TextEditingController _formPersonCtrl = TextEditingController();
+  final TextEditingController _formRemarksCtrl = TextEditingController();
+
+  // Settings Controllers
+  final TextEditingController _rLocInputCtrl = TextEditingController();
+  final TextEditingController _iLocInputCtrl = TextEditingController();
+  final TextEditingController _jpInputCtrl = TextEditingController();
+  final TextEditingController _restoreTextCtrl = TextEditingController();
+  final TextEditingController _firebaseUrlCtrl = TextEditingController();
+  final TextEditingController _cloudIdCtrl = TextEditingController();
+
   @override
   void initState() {
     super.initState();
+    _firebaseUrlCtrl.text = _firebaseUrl;
+    _cloudIdCtrl.text = _cloudStoreId;
     _loadData().then((_) {
       _checkAndRunDailyAutoBackup();
       _cacheCompanyLogo();
       if (_firebaseUrl.isNotEmpty) _syncWithCloud(silent: true);
     });
+  }
+
+  @override
+  void dispose() {
+    _formSizeCtrl.dispose();
+    _formGradeCtrl.dispose();
+    _formSchCtrl.dispose();
+    _formQtyCtrl.dispose();
+    _formMetersCtrl.dispose();
+    _formPersonCtrl.dispose();
+    _formRemarksCtrl.dispose();
+    _rLocInputCtrl.dispose();
+    _iLocInputCtrl.dispose();
+    _jpInputCtrl.dispose();
+    _restoreTextCtrl.dispose();
+    _firebaseUrlCtrl.dispose();
+    _cloudIdCtrl.dispose();
+    super.dispose();
+  }
+
+  void _clearFormInputs() {
+    _formSizeCtrl.clear();
+    _formGradeCtrl.clear();
+    _formSchCtrl.clear();
+    _formQtyCtrl.clear();
+    _formMetersCtrl.clear();
+    _formPersonCtrl.clear();
+    _formRemarksCtrl.clear();
   }
 
   Future<File> _getFile() async {
@@ -110,6 +157,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       final file = await _getFile();
       if (await file.exists()) {
         final data = jsonDecode(await file.readAsString());
+        if (!mounted) return;
         setState(() {
           transactions = List<Map<String, dynamic>>.from(data['transactions'] ?? []);
           if (data['deletedTxIds'] != null) deletedTxIds = List<String>.from(data['deletedTxIds']);
@@ -124,8 +172,14 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           if (data['pinnedJpNames'] != null) pinnedJpNames = List<String>.from(data['pinnedJpNames']);
           if (data['pinnedCategories'] != null) pinnedCategories = List<String>.from(data['pinnedCategories']);
           if (data['securityPin'] != null) _securityPin = data['securityPin'].toString();
-          if (data['firebaseUrl'] != null) _firebaseUrl = data['firebaseUrl'].toString();
-          if (data['cloudStoreId'] != null) _cloudStoreId = data['cloudStoreId'].toString();
+          if (data['firebaseUrl'] != null) {
+            _firebaseUrl = data['firebaseUrl'].toString();
+            _firebaseUrlCtrl.text = _firebaseUrl;
+          }
+          if (data['cloudStoreId'] != null) {
+            _cloudStoreId = data['cloudStoreId'].toString();
+            _cloudIdCtrl.text = _cloudStoreId;
+          }
 
           receivingLocations.removeWhere((l) => deletedLocations.contains(l));
           issueLocations.removeWhere((l) => deletedLocations.contains(l));
@@ -168,7 +222,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         final res = await http.get(Uri.parse('https://raw.githubusercontent.com/abrarch6548-pixel/pipe-inventory/main/logo.png')).timeout(const Duration(seconds: 8));
         if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
           await logoFile.writeAsBytes(res.bodyBytes);
-          setState(() {});
+          if (mounted) setState(() {});
         }
       }
     } catch (_) {}
@@ -295,6 +349,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     });
     return list;
   }
+// --- PART 1 ENDS HERE (Go to Part 2) ---// ==========================================
+// PART 2 OF 3 (Core Logic, Sync, Export & Dialogs)
+// ==========================================
 
   Future<void> _exportDocument({required String reportType, required String format, List<Map<String, dynamic>>? customList}) async {
     final nowStr = DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now());
@@ -351,9 +408,28 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Row(children: [Icon(Icons.table_chart, color: Colors.green), SizedBox(width: 8), Text('Excel Worksheet Ready!')]),
-            content: Text('File saved:\n${file.path}\n\nMicrosoft Excel ya WPS Office mein open karein.'),
-            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+            title: const Row(children: [Icon(Icons.table_chart, color: Colors.green), SizedBox(width: 8), Text('Worksheet Ready!')]),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Report file save ho gayi:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                SelectableText(file.path, style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
+              ],
+            ),
+            actions: [
+              TextButton.icon(
+                icon: const Icon(Icons.copy, size: 16),
+                label: const Text('Copy CSV Data'),
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: excel.toString()));
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('CSV Data clipboard mein copy ho gaya!')));
+                },
+              ),
+              ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+            ],
           ),
         );
       }
@@ -373,7 +449,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         .btn { background: #0A2540; color: white; border: none; padding: 8px 18px; font-weight: bold; border-radius: 4px; cursor: pointer; margin-bottom: 15px; }
         @media print { .no-print { display: none; } body { margin: 0; } }
       </style></head><body>
-      <div class="no-print"><button class="btn" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+      <div class="no-print"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
       <div class="head">
         <div><div class="logo-title">SAARI OIL FIELD SERVICES</div><div class="logo-sub">MATERIAL CONTROL & PIPELINE LOGISTICS</div></div>
         <div style="text-align:right;font-size:11px;color:#64748b;">Report: <b>$reportType</b><br>Date: $printDate</div>
@@ -422,7 +498,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Row(children: [Icon(Icons.picture_as_pdf, color: Colors.red), SizedBox(width: 8), Text('Printable PDF Ready!')]),
-            content: Text('File saved:\n${file.path}\n\nBrowser mein open kar ke "Save as PDF" ya print karein.'),
+            content: SelectableText('File saved at:\n${file.path}\n\nBrowser mein open kar ke Print / Save as PDF karein.'),
             actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
           ),
         );
@@ -460,6 +536,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // FIXED: Cloud Sync prevents re-deleting restored entries
   Future<void> _syncWithCloud({bool silent = false}) async {
     if (_isSyncing) return;
     if (_firebaseUrl.trim().isEmpty) {
@@ -480,7 +557,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         final remoteData = jsonDecode(res.body);
         if (remoteData is Map) {
           final remoteDeleted = List<String>.from(remoteData['deletedTxIds'] ?? []);
-          final allDeleted = {...deletedTxIds, ...remoteDeleted}.toList();
+          
+          // CRITICAL FIX: Only treat as deleted if NOT actively present locally
+          final localActiveIds = transactions.map((t) => t['id'].toString()).toSet();
+          final allDeleted = {...deletedTxIds, ...remoteDeleted}
+              .where((id) => !localActiveIds.contains(id))
+              .toList();
           deletedTxIds = allDeleted;
 
           final remoteDeletedLocs = List<String>.from(remoteData['deletedLocations'] ?? []);
@@ -517,12 +599,14 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
           List<String> combinedJp = {...jpNames, ...List<String>.from(remoteData['jpNames'] ?? [])}.toList();
           combinedJp.removeWhere((j) => deletedJpNames.contains(j));
 
-          setState(() {
-            transactions = localMap.values.toList();
-            receivingLocations = combinedRec;
-            issueLocations = combinedIss;
-            jpNames = combinedJp;
-          });
+          if (mounted) {
+            setState(() {
+              transactions = localMap.values.toList();
+              receivingLocations = combinedRec;
+              issueLocations = combinedIss;
+              jpNames = combinedJp;
+            });
+          }
         }
       }
 
@@ -538,13 +622,17 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       })).timeout(const Duration(seconds: 10));
 
       await _saveData();
-      setState(() => _lastSyncStatus = 'Synced at ${DateFormat('hh:mm a').format(DateTime.now())}');
-      if (!silent && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.green.shade800, content: Text('Cloud Sync Complete! (${transactions.length} entries)')));
+      if (mounted) {
+        setState(() => _lastSyncStatus = 'Synced at ${DateFormat('hh:mm a').format(DateTime.now())}');
+        if (!silent) ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.green.shade800, content: Text('Cloud Sync Complete! (${transactions.length} entries)')));
+      }
     } catch (e) {
-      setState(() => _lastSyncStatus = 'Sync Error');
-      if (!silent && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red.shade800, content: Text('Sync Error: $e')));
+      if (mounted) {
+        setState(() => _lastSyncStatus = 'Sync Error');
+        if (!silent) ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red.shade800, content: Text('Sync Error: $e')));
+      }
     } finally {
-      setState(() => _isSyncing = false);
+      if (mounted) setState(() => _isSyncing = false);
     }
   }
 
@@ -586,7 +674,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     return pinResult ?? false;
   }
 
-  // Edit Transaction with Auto Audit Trail (Before vs After Record)
   void _editTransactionById(String id) async {
     final index = transactions.indexWhere((item) => item['id'] == id);
     if (index == -1) return;
@@ -775,7 +862,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Delete Transaction to Recycle Bin
   void _deleteTransactionById(String id) async {
     if (!await _authenticateAction('Delete Record')) return;
     if (!mounted) return;
@@ -813,27 +899,56 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // Restore Transaction from Recycle Bin
-  void _restoreFromRecycleBin(Map<String, dynamic> item) {
+  // FIXED: Restore from Recycle Bin Function
+  Future<void> _restoreFromRecycleBin(Map<String, dynamic> item) async {
+    final String restoreId = item['id'].toString();
+
     setState(() {
-      recycleBin.removeWhere((x) => x['id'] == item['id']);
-      deletedTxIds.remove(item['id']);
+      recycleBin.removeWhere((x) => x['id'].toString() == restoreId);
+      deletedTxIds.removeWhere((id) => id == restoreId);
 
       final restoredItem = Map<String, dynamic>.from(item);
       restoredItem.remove('deletedAt');
       restoredItem['updatedAt'] = DateTime.now().toIso8601String();
 
+      transactions.removeWhere((t) => t['id'].toString() == restoreId);
       transactions.add(restoredItem);
     });
-    _saveData();
-    _syncWithCloud(silent: true);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      backgroundColor: Colors.green.shade800,
-      content: Text('Restored: ${item['category']} (${item['pipeSize']}) wapis active ho gaya!'),
-    ));
+
+    await _saveData();
+
+    if (_firebaseUrl.isNotEmpty) {
+      try {
+        String baseUrl = _firebaseUrl.trim();
+        if (!baseUrl.startsWith('http')) baseUrl = 'https://$baseUrl';
+        if (baseUrl.endsWith('/')) baseUrl = baseUrl.substring(0, baseUrl.length - 1);
+        final syncUri = Uri.parse('$baseUrl/$_cloudStoreId.json');
+
+        await http.put(
+          syncUri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'updatedAt': DateTime.now().toIso8601String(),
+            'transactions': transactions,
+            'deletedTxIds': deletedTxIds,
+            'deletedLocations': deletedLocations,
+            'deletedJpNames': deletedJpNames,
+            'receivingLocations': receivingLocations,
+            'issueLocations': issueLocations,
+            'jpNames': jpNames,
+          }),
+        ).timeout(const Duration(seconds: 8));
+      } catch (_) {}
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: Colors.green.shade800,
+        content: Text('Restored: ${item['category']} (${item['pipeSize']}) wapis active ho gaya!'),
+      ));
+    }
   }
 
-  // Permanent Delete from Recycle Bin
   void _permanentDeleteFromTrash(String id) {
     setState(() {
       recycleBin.removeWhere((x) => x['id'] == id);
@@ -842,7 +957,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permanently removed from Trash!')));
   }
 
-  // Screen for Recycle Bin & Edit Audit History
   void _openRecycleBinAndAuditScreen() {
     Navigator.push(
       context,
@@ -866,7 +980,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             ),
             body: TabBarView(
               children: [
-                // Tab 1: Recycle Bin
                 StatefulBuilder(
                   builder: (ctx, setTrashState) => recycleBin.isEmpty
                       ? const Center(
@@ -934,8 +1047,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                                           style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800),
                                           icon: const Icon(Icons.restore, color: Colors.white, size: 16),
                                           label: const Text('Restore', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
-                                          onPressed: () {
-                                            _restoreFromRecycleBin(item);
+                                          onPressed: () async {
+                                            await _restoreFromRecycleBin(item);
                                             setTrashState(() {});
                                             setState(() {});
                                           },
@@ -949,8 +1062,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                           },
                         ),
                 ),
-
-                // Tab 2: Edit Audit Log
                 editAuditLogs.isEmpty
                     ? const Center(
                         child: Column(
@@ -1160,9 +1271,8 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       ),
     );
   }
-
-// // ==========================================
-// PART 2 (Part 1 ke neechay yahan se paste karein)
+// --- PART 2 ENDS HERE (Go to Part 3) ---// ==========================================
+// PART 3 OF 4 (UI Widgets, Monogram, Dashboard & Forms)
 // ==========================================
 
   Widget _buildOfficialMonogram() {
@@ -1353,14 +1463,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     final isIssue = type == 'ISSUE';
     final isReturn = type == 'RETURN';
 
-    final sizeCtrl = TextEditingController();
-    final gradeCtrl = TextEditingController();
-    final schCtrl = TextEditingController();
-    final qtyCtrl = TextEditingController();
-    final metersCtrl = TextEditingController();
-    final personCtrl = TextEditingController();
-    final remarksCtrl = TextEditingController();
-
     final sortedCats = _getSortedList(categories, pinnedCategories);
     String cat = (pinnedCategories.isNotEmpty && categories.contains(pinnedCategories.first))
         ? pinnedCategories.first
@@ -1383,9 +1485,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       builder: (context, setSub) {
         final isElbowOrFlange = (cat == 'Elbow' || cat == 'Flange');
         final isCutPiece = (cat == 'Cut Piece');
-        final curSize = sizeCtrl.text.trim();
-        final curGrade = gradeCtrl.text.trim();
-        final curSch = schCtrl.text.trim();
+        final curSize = _formSizeCtrl.text.trim();
+        final curGrade = _formGradeCtrl.text.trim();
+        final curSch = _formSchCtrl.text.trim();
 
         final totalAvail = isIssue ? _getTotalAvailableToIssue(curSize, curGrade, curSch, cat, coat) : 0.0;
         final readyInYard = isIssue ? _getPhysicalStockQty(curSize, curGrade, curSch, cat, coat) : 0.0;
@@ -1438,15 +1540,15 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
             Row(
               children: [
-                Expanded(child: TextField(controller: sizeCtrl, decoration: const InputDecoration(labelText: 'Size *'), onChanged: (_) => setSub(() {}))),
+                Expanded(child: TextField(controller: _formSizeCtrl, decoration: const InputDecoration(labelText: 'Size *'), onChanged: (_) => setSub(() {}))),
                 const SizedBox(width: 8),
-                Expanded(child: TextField(controller: gradeCtrl, decoration: const InputDecoration(labelText: 'Grade *'), onChanged: (_) => setSub(() {}))),
+                Expanded(child: TextField(controller: _formGradeCtrl, decoration: const InputDecoration(labelText: 'Grade *'), onChanged: (_) => setSub(() {}))),
               ],
             ),
             const SizedBox(height: 8),
 
             TextField(
-              controller: schCtrl,
+              controller: _formSchCtrl,
               decoration: InputDecoration(labelText: isElbowOrFlange ? 'Class / Rating (Strict) *' : 'Pipe SCH (Strict) *'),
               onChanged: (_) => setSub(() {}),
             ),
@@ -1471,10 +1573,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
             Row(
               children: [
-                Expanded(child: TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity (Pieces) *'), onChanged: (_) => setSub(() {}))),
+                Expanded(child: TextField(controller: _formQtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity (Pieces) *'), onChanged: (_) => setSub(() {}))),
                 if (isCutPiece) ...[
                   const SizedBox(width: 8),
-                  Expanded(child: TextField(controller: metersCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Kul Length (Meters) *'))),
+                  Expanded(child: TextField(controller: _formMetersCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Kul Length (Meters) *'))),
                 ],
               ],
             ),
@@ -1489,7 +1591,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               ),
 
             if (isIssue) ...[
-              TextField(controller: personCtrl, decoration: const InputDecoration(labelText: 'Issued To / Person *')),
+              TextField(controller: _formPersonCtrl, decoration: const InputDecoration(labelText: 'Issued To / Person *')),
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
                 value: sortedIssLocs.contains(iLoc) ? iLoc : (sortedIssLocs.isNotEmpty ? sortedIssLocs.first : null),
@@ -1507,20 +1609,20 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             ],
 
             if (isReturn)
-              TextField(controller: personCtrl, decoration: const InputDecoration(labelText: 'Returned From (Site / Person) *')),
+              TextField(controller: _formPersonCtrl, decoration: const InputDecoration(labelText: 'Returned From (Site / Person) *')),
 
             const SizedBox(height: 8),
-            TextField(controller: remarksCtrl, decoration: const InputDecoration(labelText: 'Remarks')),
+            TextField(controller: _formRemarksCtrl, decoration: const InputDecoration(labelText: 'Remarks')),
             const SizedBox(height: 16),
 
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: themeColor, padding: const EdgeInsets.symmetric(vertical: 14)),
               onPressed: () async {
-                final s = sizeCtrl.text.trim();
-                final g = gradeCtrl.text.trim();
-                final sch = schCtrl.text.trim();
-                double req = double.tryParse(qtyCtrl.text) ?? 0;
-                double reqM = double.tryParse(metersCtrl.text) ?? 0.0;
+                final s = _formSizeCtrl.text.trim();
+                final g = _formGradeCtrl.text.trim();
+                final sch = _formSchCtrl.text.trim();
+                double req = double.tryParse(_formQtyCtrl.text) ?? 0;
+                double reqM = double.tryParse(_formMetersCtrl.text) ?? 0.0;
 
                 if (s.isEmpty || g.isEmpty || req <= 0) {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill mandatory fields!')));
@@ -1549,14 +1651,15 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     'internalCoating': coat,
                     'quantity': req,
                     'lengthMeters': reqM,
-                    'entity': isReceive ? rLoc : personCtrl.text.trim(),
+                    'entity': isReceive ? rLoc : _formPersonCtrl.text.trim(),
                     'location': isIssue ? iLoc : '',
                     'jpName': isIssue ? jp : '',
                     'date': DateFormat('yyyy-MM-dd').format(selectedDate),
-                    'remarks': remarksCtrl.text.trim(),
+                    'remarks': _formRemarksCtrl.text.trim(),
                     'updatedAt': DateTime.now().toIso8601String(),
                   });
                 });
+                _clearFormInputs();
                 _saveData();
                 _syncWithCloud(silent: true);
                 if (context.mounted) {
@@ -1571,6 +1674,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       },
     );
   }
+// --- PART 3 ENDS HERE (Go to Part 4) ---// ==========================================
+// PART 4 OF 4 (Stock View, History & Settings)
+// ==========================================
 
   Widget _buildStock() {
     return Column(
@@ -1911,13 +2017,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
   // Settings Screen
   Widget _buildManageAndBackup() {
-    final rLocCtrl = TextEditingController();
-    final iLocCtrl = TextEditingController();
-    final jpCtrl = TextEditingController();
-    final restoreTextCtrl = TextEditingController();
-    final firebaseUrlCtrl = TextEditingController(text: _firebaseUrl);
-    final cloudIdCtrl = TextEditingController(text: _cloudStoreId);
-
     return ListView(
       padding: const EdgeInsets.all(14),
       children: [
@@ -1927,7 +2026,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ]),
         const SizedBox(height: 6),
 
-        // NEW: Recycle Bin & Edit Audit History Tile
         Card(
           color: const Color(0xFFFFF7ED),
           elevation: 2,
@@ -1945,7 +2043,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const SizedBox(height: 10),
 
-        // Category Priority Pinning
         Card(
           color: Colors.amber.shade50,
           child: Padding(
@@ -1984,7 +2081,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // Firebase Sync
         Card(
           color: Colors.blue.shade50,
           child: Padding(
@@ -1994,12 +2090,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               children: [
                 Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Firebase Cloud Sync', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)), Text(_lastSyncStatus, style: TextStyle(fontSize: 10, color: _lastSyncStatus.startsWith('Synced') ? Colors.green.shade800 : Colors.blue))]),
                 const SizedBox(height: 6),
-                TextField(controller: firebaseUrlCtrl, decoration: const InputDecoration(labelText: 'Firebase URL', border: OutlineInputBorder(), hintText: 'https://...firebaseio.com')),
+                TextField(controller: _firebaseUrlCtrl, decoration: const InputDecoration(labelText: 'Firebase URL', border: OutlineInputBorder(), hintText: 'https://...firebaseio.com')),
                 const SizedBox(height: 6),
                 Row(children: [
-                  Expanded(child: TextField(controller: cloudIdCtrl, decoration: const InputDecoration(labelText: 'Branch Key', border: OutlineInputBorder()))),
+                  Expanded(child: TextField(controller: _cloudIdCtrl, decoration: const InputDecoration(labelText: 'Branch Key', border: OutlineInputBorder()))),
                   const SizedBox(width: 8),
-                  ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)), onPressed: () { setState(() { _firebaseUrl = firebaseUrlCtrl.text.trim(); _cloudStoreId = cloudIdCtrl.text.trim(); }); _saveData(); _syncWithCloud(silent: false); }, child: const Text('Connect', style: TextStyle(color: Colors.white))),
+                  ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540)), onPressed: () { setState(() { _firebaseUrl = _firebaseUrlCtrl.text.trim(); _cloudStoreId = _cloudIdCtrl.text.trim(); }); _saveData(); _syncWithCloud(silent: false); }, child: const Text('Connect', style: TextStyle(color: Colors.white))),
                 ]),
               ],
             ),
@@ -2007,7 +2103,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // PIN Security
         Card(
           color: Colors.amber.shade50,
           child: Padding(
@@ -2034,7 +2129,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // Backup & Restore
         const Text('Backup & Data Protection', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         Card(
@@ -2072,12 +2166,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                   },
                 ),
                 const SizedBox(height: 8),
-                TextField(controller: restoreTextCtrl, maxLines: 2, decoration: const InputDecoration(hintText: 'Paste backup JSON to restore...', border: OutlineInputBorder())),
+                TextField(controller: _restoreTextCtrl, maxLines: 2, decoration: const InputDecoration(hintText: 'Paste backup JSON to restore...', border: OutlineInputBorder())),
                 const SizedBox(height: 6),
                 ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade800), onPressed: () async {
-                  if (restoreTextCtrl.text.isEmpty || !await _authenticateAction('Restore')) return;
+                  if (_restoreTextCtrl.text.isEmpty || !await _authenticateAction('Restore')) return;
                   try {
-                    final data = jsonDecode(restoreTextCtrl.text.trim());
+                    final data = jsonDecode(_restoreTextCtrl.text.trim());
                     setState(() {
                       if (data['transactions'] != null) transactions = List<Map<String, dynamic>>.from(data['transactions']);
                       if (data['deletedTxIds'] != null) deletedTxIds = List<String>.from(data['deletedTxIds']);
@@ -2100,22 +2194,21 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // Receiving Locations
         const Text('Receiving Locations (Tap to Edit/Rename | 🗑️ to Delete)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
         Row(children: [
-          Expanded(child: TextField(controller: rLocCtrl, decoration: const InputDecoration(labelText: 'New Receiving Location', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)))),
+          Expanded(child: TextField(controller: _rLocInputCtrl, decoration: const InputDecoration(labelText: 'New Receiving Location', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)))),
           const SizedBox(width: 6),
           IconButton(icon: const Icon(Icons.add_circle, color: Colors.blue, size: 28), onPressed: () {
-            if (rLocCtrl.text.isNotEmpty) {
-              final newL = rLocCtrl.text.trim();
+            if (_rLocInputCtrl.text.isNotEmpty) {
+              final newL = _rLocInputCtrl.text.trim();
               setState(() {
                 receivingLocations.add(newL);
                 deletedLocations.remove(newL);
               });
               _saveData();
               _syncWithCloud(silent: true);
-              rLocCtrl.clear();
+              _rLocInputCtrl.clear();
             }
           }),
         ]),
@@ -2138,22 +2231,21 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         }).toList()),
         const Divider(height: 16),
 
-        // Issue Locations
         const Text('Issue Locations (Tap to Edit/Rename | 🗑️ to Delete)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
         Row(children: [
-          Expanded(child: TextField(controller: iLocCtrl, decoration: const InputDecoration(labelText: 'New Issue Location', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)))),
+          Expanded(child: TextField(controller: _iLocInputCtrl, decoration: const InputDecoration(labelText: 'New Issue Location', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)))),
           const SizedBox(width: 6),
           IconButton(icon: const Icon(Icons.add_circle, color: Colors.green, size: 28), onPressed: () {
-            if (iLocCtrl.text.isNotEmpty) {
-              final newL = iLocCtrl.text.trim();
+            if (_iLocInputCtrl.text.isNotEmpty) {
+              final newL = _iLocInputCtrl.text.trim();
               setState(() {
                 issueLocations.add(newL);
                 deletedLocations.remove(newL);
               });
               _saveData();
               _syncWithCloud(silent: true);
-              iLocCtrl.clear();
+              _iLocInputCtrl.clear();
             }
           }),
         ]),
@@ -2176,22 +2268,21 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         }).toList()),
         const Divider(height: 16),
 
-        // JP Names
         const Text('JP Names (Tap to Edit/Rename | 🗑️ to Delete)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
         Row(children: [
-          Expanded(child: TextField(controller: jpCtrl, decoration: const InputDecoration(labelText: 'New JP Name', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)))),
+          Expanded(child: TextField(controller: _jpInputCtrl, decoration: const InputDecoration(labelText: 'New JP Name', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)))),
           const SizedBox(width: 6),
           IconButton(icon: const Icon(Icons.add_circle, color: Colors.orange, size: 28), onPressed: () {
-            if (jpCtrl.text.isNotEmpty) {
-              final newJ = jpCtrl.text.trim();
+            if (_jpInputCtrl.text.isNotEmpty) {
+              final newJ = _jpInputCtrl.text.trim();
               setState(() {
                 jpNames.add(newJ);
                 deletedJpNames.remove(newJ);
               });
               _saveData();
               _syncWithCloud(silent: true);
-              jpCtrl.clear();
+              _jpInputCtrl.clear();
             }
           }),
         ]),
@@ -2216,3 +2307,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 }
+// ==========================================
+// END OF COMPLETE APPLICATION
+// ==========================================
