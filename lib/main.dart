@@ -43,14 +43,14 @@ class MainInventoryScreen extends StatefulWidget {
 class _MainInventoryScreenState extends State<MainInventoryScreen> {
   int _navIndex = 0;
   List<Map<String, dynamic>> transactions = [];
-  List<String> deletedTxIds = []; // Blacklist for permanently deleted entries
+  List<String> deletedTxIds = [];
   List<String> receivingLocations = ['Main Yard Receiving', 'Warehouse Gate 1', 'Bay 4 Discharge'];
   List<String> issueLocations = ['Yard 1', 'Yard 2', 'Warehouse A', 'Main Site Line'];
   List<String> jpNames = ['JP-Alpha', 'JP-Beta', 'JP-North', 'JP-Pipeline-01'];
 
   List<String> pinnedLocations = [];
   List<String> pinnedJpNames = [];
-  List<String> pinnedCategories = ['Bare Pipe', '3LPP Pipe'];
+  List<String> pinnedCategories = ['Bare Pipe'];
 
   String _securityPin = '1234';
   String _firebaseUrl = '';
@@ -70,6 +70,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
   String _stockSearchQuery = '';
   String _historySearchQuery = '';
   String _historyTypeFilter = 'ALL';
+
+  // Date Range Filter & Highlight states
+  DateTime? _historyStartDate;
+  DateTime? _historyEndDate;
+  String? _highlightedTxId;
 
   @override
   void initState() {
@@ -113,7 +118,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     try {
       final file = await _getFile();
       await file.writeAsString(jsonEncode({
-        'version': '4.4',
+        'version': '4.5',
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
         'deletedTxIds': deletedTxIds,
@@ -130,7 +135,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     } catch (_) {}
   }
 
-  // Automatic download of original monogram from GitHub repository
   Future<void> _cacheCompanyLogo() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -429,7 +433,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- PERMANENT DELETION & CLOUD SYNC ENGINE (GHOST RESURRECTION FIXED) ---
   Future<void> _syncWithCloud({bool silent = false}) async {
     if (_isSyncing) return;
     if (_firebaseUrl.trim().isEmpty) {
@@ -449,12 +452,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       if (res.statusCode == 200 && res.body != 'null' && res.body.isNotEmpty) {
         final remoteData = jsonDecode(res.body);
         if (remoteData is Map) {
-          // 1. Merge Tombstones (Deleted IDs) from Cloud and Local
           final remoteDeleted = List<String>.from(remoteData['deletedTxIds'] ?? []);
           final allDeleted = {...deletedTxIds, ...remoteDeleted}.toList();
           deletedTxIds = allDeleted;
 
-          // 2. Filter out any transaction that was ever deleted
           final remoteTx = List<Map<String, dynamic>>.from(remoteData['transactions'] ?? []);
           remoteTx.removeWhere((rt) => allDeleted.contains(rt['id']));
 
@@ -474,11 +475,10 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         }
       }
 
-      // 3. Save clean state back to Cloud (including blacklist)
       await http.put(syncUri, headers: {'Content-Type': 'application/json'}, body: jsonEncode({
         'updatedAt': DateTime.now().toIso8601String(),
         'transactions': transactions,
-        'deletedTxIds': deletedTxIds, // Blacklist sent to cloud
+        'deletedTxIds': deletedTxIds,
         'receivingLocations': receivingLocations,
         'issueLocations': issueLocations,
         'jpNames': jpNames,
@@ -615,7 +615,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- PERMANENT DELETE (NEVER RESURRECTS FROM CLOUD) ---
   void _deleteTransactionById(String id) async {
     if (!await _authenticateAction('Delete Record')) return;
     if (!mounted) return;
@@ -633,7 +632,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               setState(() {
                 transactions.removeWhere((item) => item['id'] == id);
                 if (!deletedTxIds.contains(id)) {
-                  deletedTxIds.add(id); // Added to tombstone blacklist
+                  deletedTxIds.add(id);
                 }
               });
               _saveData();
@@ -648,6 +647,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // Bulk Rename Location or JP (Point 2 - 100% cascade update across all records)
   void _renameLocationOrJpDialog({required bool isLocation, required String oldName}) {
     final newCtrl = TextEditingController(text: oldName);
     bool cascade = true;
@@ -656,16 +656,17 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDState) => AlertDialog(
-          title: Text('Edit ${isLocation ? "Location" : "JP Name"}'),
+          title: Text('Edit & Rename ${isLocation ? "Location" : "JP Name"}'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextField(controller: newCtrl, decoration: const InputDecoration(labelText: 'New Name')),
-              const SizedBox(height: 8),
+              TextField(controller: newCtrl, decoration: const InputDecoration(labelText: 'New Name', border: OutlineInputBorder())),
+              const SizedBox(height: 10),
               CheckboxListTile(
                 contentPadding: EdgeInsets.zero,
                 value: cascade,
-                title: const Text('Purani tamam entries mein bhi update karein?', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                title: const Text('Purani tamam entries mein bhi naya naam update karein?', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                subtitle: const Text('One-click bulk update across all past records.', style: TextStyle(fontSize: 11, color: Colors.grey)),
                 onChanged: (v) => setDState(() => cascade = v ?? true),
               ),
             ],
@@ -686,9 +687,13 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                     if (rIdx != -1) receivingLocations[rIdx] = newName;
                     final iIdx = issueLocations.indexOf(oldName);
                     if (iIdx != -1) issueLocations[iIdx] = newName;
+                    final pIdx = pinnedLocations.indexOf(oldName);
+                    if (pIdx != -1) pinnedLocations[pIdx] = newName;
                   } else {
                     final jIdx = jpNames.indexOf(oldName);
                     if (jIdx != -1) jpNames[jIdx] = newName;
+                    final pjIdx = pinnedJpNames.indexOf(oldName);
+                    if (pjIdx != -1) pinnedJpNames[pjIdx] = newName;
                   }
                   if (cascade) {
                     for (var t in transactions) {
@@ -704,9 +709,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                 _saveData();
                 _syncWithCloud(silent: true);
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Renamed Successfully!')));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Renamed & Updated across all records!')));
               },
-              child: const Text('Save', style: TextStyle(color: Colors.white)),
+              child: const Text('Update & Save', style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
@@ -714,7 +719,40 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
-  // --- MONOGRAM HEADER: CHECKS LOCAL CACHED FILE OR RENDERS EXACT BRANDING ---
+  // Delete Location or JP (Point 2 - Direct deletion)
+  void _deleteLocationOrJp({required bool isLocation, required String name}) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete ${isLocation ? "Location" : "JP Name"}?'),
+        content: Text('Kya aap "$name" ko dropdown list se delete karna chahte hain?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              setState(() {
+                if (isLocation) {
+                  receivingLocations.remove(name);
+                  issueLocations.remove(name);
+                  pinnedLocations.remove(name);
+                } else {
+                  jpNames.remove(name);
+                  pinnedJpNames.remove(name);
+                }
+              });
+              _saveData();
+              _syncWithCloud(silent: true);
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Deleted: $name')));
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildOfficialMonogram() {
     File? cachedLogo;
     if (_appDirPath.isNotEmpty) {
@@ -737,7 +775,6 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       );
     }
 
-    // High-Fidelity exact vector brand badge if image is not downloaded yet
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -899,6 +936,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // Unified Form with Auto-Selected Starred Category (Point 3)
   Widget _buildTransactionForm(String type) {
     final isReceive = type == 'RECEIVE';
     final isIssue = type == 'ISSUE';
@@ -912,7 +950,12 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     final personCtrl = TextEditingController();
     final remarksCtrl = TextEditingController();
 
-    String cat = categories.first;
+    // Point 3: Auto-select Starred Category first!
+    final sortedCats = _getSortedList(categories, pinnedCategories);
+    String cat = (pinnedCategories.isNotEmpty && categories.contains(pinnedCategories.first))
+        ? pinnedCategories.first
+        : categories.first;
+
     String coat = coatingOptions.first;
     DateTime selectedDate = DateTime.now();
 
@@ -965,9 +1008,21 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
             DropdownButtonFormField<String>(
               value: cat,
-              items: _getSortedList(categories, pinnedCategories).map((c) => DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(fontSize: 13)))).toList(),
+              items: sortedCats.map((c) {
+                final isPin = pinnedCategories.contains(c);
+                return DropdownMenuItem(
+                  value: c,
+                  child: Row(
+                    children: [
+                      if (isPin) const Icon(Icons.star, size: 14, color: Colors.amber),
+                      if (isPin) const SizedBox(width: 4),
+                      Text(c, style: TextStyle(fontSize: 13, fontWeight: isPin ? FontWeight.bold : FontWeight.normal)),
+                    ],
+                  ),
+                );
+              }).toList(),
               onChanged: (v) => setSub(() => cat = v!),
-              decoration: const InputDecoration(labelText: 'Item Category *'),
+              decoration: const InputDecoration(labelText: 'Item Category (⭐ Starred is Default) *'),
             ),
             const SizedBox(height: 8),
 
@@ -1201,11 +1256,23 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // History with Date Range Picker & Touch Highlight (Points 1 & 4)
   Widget _buildHistory() {
     final filtered = transactions.where((t) {
       if (_historyTypeFilter == 'RECEIVE' && t['type'] != 'RECEIVE') return false;
       if (_historyTypeFilter == 'ISSUE' && t['type'] != 'ISSUE') return false;
       if (_historyTypeFilter == 'RETURN' && t['type'] != 'RETURN') return false;
+
+      // Point 1: Filter by Date Range (From Date to To Date)
+      if (_historyStartDate != null && _historyEndDate != null) {
+        final tDate = DateTime.tryParse(t['date'] ?? '');
+        if (tDate != null) {
+          final entryDay = DateTime(tDate.year, tDate.month, tDate.day);
+          final startDay = DateTime(_historyStartDate!.year, _historyStartDate!.month, _historyStartDate!.day);
+          final endDay = DateTime(_historyEndDate!.year, _historyEndDate!.month, _historyEndDate!.day);
+          if (entryDay.isBefore(startDay) || entryDay.isAfter(endDay)) return false;
+        }
+      }
 
       if (_historySearchQuery.isNotEmpty) {
         final q = _historySearchQuery;
@@ -1229,19 +1296,64 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
       if (c == 'Cut Piece') cpMeters += (t['lengthMeters'] as num?)?.toDouble() ?? 0.0;
     }
 
+    String dateRangeLabel = (_historyStartDate != null && _historyEndDate != null)
+        ? '${DateFormat('dd/MM/yy').format(_historyStartDate!)} - ${DateFormat('dd/MM/yy').format(_historyEndDate!)}'
+        : 'Filter by Date Range';
+
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: TextField(
-            decoration: InputDecoration(
-              prefixIcon: const Icon(Icons.search, size: 18),
-              hintText: 'Search Location, Grade, Class, Size...',
-              border: const OutlineInputBorder(),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
-              suffixIcon: _historySearchQuery.isNotEmpty ? IconButton(icon: const Icon(Icons.clear, size: 16), onPressed: () => setState(() => _historySearchQuery = '')) : null,
-            ),
-            onChanged: (v) => setState(() => _historySearchQuery = v.trim().toLowerCase()),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    hintText: 'Search Location, Grade, Class...',
+                    border: const OutlineInputBorder(),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                    suffixIcon: _historySearchQuery.isNotEmpty ? IconButton(icon: const Icon(Icons.clear, size: 16), onPressed: () => setState(() => _historySearchQuery = '')) : null,
+                  ),
+                  onChanged: (v) => setState(() => _historySearchQuery = v.trim().toLowerCase()),
+                ),
+              ),
+              const SizedBox(width: 6),
+              // Point 1: Date Range Picker Button
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: (_historyStartDate != null) ? Colors.teal : const Color(0xFF0A2540),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                ),
+                icon: const Icon(Icons.date_range, color: Colors.white, size: 16),
+                label: Text(dateRangeLabel, style: const TextStyle(color: Colors.white, fontSize: 11)),
+                onPressed: () async {
+                  final range = await showDateRangePicker(
+                    context: context,
+                    firstDate: DateTime(2000),
+                    lastDate: DateTime(2100),
+                    initialDateRange: (_historyStartDate != null && _historyEndDate != null)
+                        ? DateTimeRange(start: _historyStartDate!, end: _historyEndDate!)
+                        : null,
+                  );
+                  if (range != null) {
+                    setState(() {
+                      _historyStartDate = range.start;
+                      _historyEndDate = range.end;
+                    });
+                  }
+                },
+              ),
+              if (_historyStartDate != null)
+                IconButton(
+                  icon: const Icon(Icons.cancel, color: Colors.red, size: 20),
+                  tooltip: 'Clear Date Filter',
+                  onPressed: () => setState(() {
+                    _historyStartDate = null;
+                    _historyEndDate = null;
+                  }),
+                ),
+            ],
           ),
         ),
         Padding(
@@ -1271,11 +1383,11 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  Text('Search Results (${filtered.length} entries):', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                  Text('Filtered Summary (${filtered.length} entries):', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
                   ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A2540), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2)),
                     icon: const Icon(Icons.file_download, color: Colors.white, size: 12),
-                    label: const Text('Excel/PDF', style: TextStyle(color: Colors.white, fontSize: 10)),
+                    label: const Text('Export Excel/PDF', style: TextStyle(color: Colors.white, fontSize: 10)),
                     onPressed: () => _showExportChoiceDialog(_historyTypeFilter, customList: filtered),
                   ),
                 ]),
@@ -1293,28 +1405,56 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
 
         Expanded(
           child: filtered.isEmpty
-              ? const Center(child: Text('No records found.'))
+              ? const Center(child: Text('No records found for this filter.'))
               : ListView.builder(
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
                     final t = filtered[index];
                     final tId = t['id'];
+                    final isHighlighted = (_highlightedTxId == tId);
+
                     IconData icon = t['type'] == 'RECEIVE' ? Icons.arrow_downward : (t['type'] == 'RETURN' ? Icons.assignment_return : Icons.arrow_upward);
                     Color color = t['type'] == 'RECEIVE' ? Colors.green : (t['type'] == 'RETURN' ? Colors.teal : Colors.orange);
                     final meters = (t['lengthMeters'] ?? 0) > 0 ? " (${t['lengthMeters']}m)" : "";
 
                     return Card(
                       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
-                      child: ListTile(
-                        leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), radius: 20, child: Icon(icon, color: color, size: 20)),
-                        title: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                        subtitle: Text('Grade: ${t['pipeGrade']} | SCH/Class: ${t['pipeSch'] ?? t['itemClass'] ?? ''}\nQty: ${t['quantity']} Pcs$meters | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}${t['jpName'] != null ? ' | JP: ${t['jpName']}' : ''}', style: const TextStyle(fontSize: 11)),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(icon: const Icon(Icons.edit, color: Colors.blue, size: 18), onPressed: () => _editTransactionById(tId)),
-                            IconButton(icon: const Icon(Icons.delete, color: Colors.red, size: 18), onPressed: () => _deleteTransactionById(tId)),
-                          ],
+                      color: isHighlighted ? const Color(0xFFFEF3C7) : Colors.white, // Point 4: Highlight Color
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: BorderSide(
+                          color: isHighlighted ? const Color(0xFFF25F22) : Colors.black12,
+                          width: isHighlighted ? 2.2 : 1, // Point 4: Bold border on tap
+                        ),
+                      ),
+                      child: InkWell(
+                        // Point 4: Tap to highlight entry
+                        onTap: () {
+                          setState(() {
+                            _highlightedTxId = (isHighlighted ? null : tId);
+                          });
+                        },
+                        child: ListTile(
+                          leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), radius: 18, child: Icon(icon, color: color, size: 16)),
+                          title: Row(
+                            children: [
+                              Expanded(child: Text('${t['category']} (${t['pipeSize']}) - ${t['internalCoating']}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
+                              if (isHighlighted)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(color: const Color(0xFFF25F22), borderRadius: BorderRadius.circular(4)),
+                                  child: const Text('TOUCHED', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                                ),
+                            ],
+                          ),
+                          subtitle: Text('Grade: ${t['pipeGrade']} | SCH/Class: ${t['pipeSch'] ?? t['itemClass'] ?? ''}\nQty: ${t['quantity']} Pcs$meters | Date: ${t['date']}\nLoc: ${t['entity'] ?? t['location']}${t['jpName'] != null ? ' | JP: ${t['jpName']}' : ''}', style: const TextStyle(fontSize: 11)),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(icon: const Icon(Icons.edit, color: Colors.blue, size: 18), onPressed: () => _editTransactionById(tId)),
+                              IconButton(icon: const Icon(Icons.delete, color: Colors.red, size: 18), onPressed: () => _deleteTransactionById(tId)),
+                            ],
+                          ),
                         ),
                       ),
                     );
@@ -1325,6 +1465,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
     );
   }
 
+  // Settings & Management (Points 2 & 3)
   Widget _buildManageAndBackup() {
     final rLocCtrl = TextEditingController();
     final iLocCtrl = TextEditingController();
@@ -1342,7 +1483,7 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ]),
         const SizedBox(height: 6),
 
-        // Category Priority Pinning (Point 2)
+        // Point 3: Category Priority Pinning (Top selection)
         Card(
           color: Colors.amber.shade50,
           child: Padding(
@@ -1350,9 +1491,9 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Row(children: [Icon(Icons.star, color: Colors.amber, size: 20), SizedBox(width: 6), Text('Category Dropdown Priority (Pin ⭐ to Top)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))]),
+                const Row(children: [Icon(Icons.star, color: Colors.amber, size: 20), SizedBox(width: 6), Text('Category Default Priority (Star ⭐ to Set Default)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))]),
                 const SizedBox(height: 4),
-                const Text('Jis category par tap karenge wo dropdown mein sab se pehle number par aayegi:', style: TextStyle(fontSize: 11)),
+                const Text('Jis category par tap karenge wo Receive/Issue form mein pehle se auto-select hogi:', style: TextStyle(fontSize: 11)),
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 6,
@@ -1363,7 +1504,13 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
                       label: Text(c, style: TextStyle(fontSize: 11, fontWeight: isPin ? FontWeight.bold : FontWeight.normal)),
                       selected: isPin,
                       onSelected: (val) {
-                        setState(() { val ? pinnedCategories.add(c) : pinnedCategories.remove(c); });
+                        setState(() {
+                          if (val) {
+                            pinnedCategories.insert(0, c); // Moves to top of list as default!
+                          } else {
+                            pinnedCategories.remove(c);
+                          }
+                        });
                         _saveData();
                       },
                     );
@@ -1475,54 +1622,81 @@ class _MainInventoryScreenState extends State<MainInventoryScreen> {
         ),
         const Divider(height: 20),
 
-        // Locations & JPs
-        const Text('Receiving Locations (Pin ⭐ / Edit)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+        // Point 2: Locations & JPs Management with working Delete 🗑️ and Edit/Rename ✏️
+        const Text('Receiving Locations (Tap to Edit/Rename | 🗑️ to Delete)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
         Row(children: [
-          Expanded(child: TextField(controller: rLocCtrl, decoration: const InputDecoration(labelText: 'New Location'))),
-          IconButton(icon: const Icon(Icons.add_circle, color: Colors.blue), onPressed: () { if (rLocCtrl.text.isNotEmpty) { setState(() => receivingLocations.add(rLocCtrl.text.trim())); _saveData(); rLocCtrl.clear(); } }),
+          Expanded(child: TextField(controller: rLocCtrl, decoration: const InputDecoration(labelText: 'New Receiving Location', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)))),
+          const SizedBox(width: 6),
+          IconButton(icon: const Icon(Icons.add_circle, color: Colors.blue, size: 28), onPressed: () { if (rLocCtrl.text.isNotEmpty) { setState(() => receivingLocations.add(rLocCtrl.text.trim())); _saveData(); rLocCtrl.clear(); } }),
         ]),
+        const SizedBox(height: 6),
         Wrap(spacing: 6, children: receivingLocations.map((l) {
           final isP = pinnedLocations.contains(l);
-          return InputChip(
-            avatar: Icon(isP ? Icons.star : Icons.star_border, size: 14, color: Colors.amber.shade900),
-            label: Text(l, style: const TextStyle(fontSize: 11)),
-            onPressed: () { setState(() { isP ? pinnedLocations.remove(l) : pinnedLocations.add(l); }); _saveData(); },
-            deleteIcon: const Icon(Icons.edit, size: 14),
-            onDeleted: () => _renameLocationOrJpDialog(isLocation: true, oldName: l),
+          return Chip(
+            avatar: IconButton(
+              padding: EdgeInsets.zero,
+              icon: Icon(isP ? Icons.star : Icons.star_border, size: 16, color: Colors.amber.shade900),
+              onPressed: () { setState(() { isP ? pinnedLocations.remove(l) : pinnedLocations.add(l); }); _saveData(); },
+            ),
+            label: InkWell(
+              onTap: () => _renameLocationOrJpDialog(isLocation: true, oldName: l),
+              child: Text(l, style: const TextStyle(fontSize: 11)),
+            ),
+            deleteIcon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
+            onDeleted: () => _deleteLocationOrJp(isLocation: true, name: l),
           );
         }).toList()),
         const Divider(height: 16),
 
-        const Text('Issue Locations (Pin ⭐ / Edit)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+        const Text('Issue Locations (Tap to Edit/Rename | 🗑️ to Delete)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
         Row(children: [
-          Expanded(child: TextField(controller: iLocCtrl, decoration: const InputDecoration(labelText: 'New Destination'))),
-          IconButton(icon: const Icon(Icons.add_circle, color: Colors.green), onPressed: () { if (iLocCtrl.text.isNotEmpty) { setState(() => issueLocations.add(iLocCtrl.text.trim())); _saveData(); iLocCtrl.clear(); } }),
+          Expanded(child: TextField(controller: iLocCtrl, decoration: const InputDecoration(labelText: 'New Issue Location', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)))),
+          const SizedBox(width: 6),
+          IconButton(icon: const Icon(Icons.add_circle, color: Colors.green, size: 28), onPressed: () { if (iLocCtrl.text.isNotEmpty) { setState(() => issueLocations.add(iLocCtrl.text.trim())); _saveData(); iLocCtrl.clear(); } }),
         ]),
+        const SizedBox(height: 6),
         Wrap(spacing: 6, children: issueLocations.map((l) {
           final isP = pinnedLocations.contains(l);
-          return InputChip(
-            avatar: Icon(isP ? Icons.star : Icons.star_border, size: 14, color: Colors.amber.shade900),
-            label: Text(l, style: const TextStyle(fontSize: 11)),
-            onPressed: () { setState(() { isP ? pinnedLocations.remove(l) : pinnedLocations.add(l); }); _saveData(); },
-            deleteIcon: const Icon(Icons.edit, size: 14),
-            onDeleted: () => _renameLocationOrJpDialog(isLocation: true, oldName: l),
+          return Chip(
+            avatar: IconButton(
+              padding: EdgeInsets.zero,
+              icon: Icon(isP ? Icons.star : Icons.star_border, size: 16, color: Colors.amber.shade900),
+              onPressed: () { setState(() { isP ? pinnedLocations.remove(l) : pinnedLocations.add(l); }); _saveData(); },
+            ),
+            label: InkWell(
+              onTap: () => _renameLocationOrJpDialog(isLocation: true, oldName: l),
+              child: Text(l, style: const TextStyle(fontSize: 11)),
+            ),
+            deleteIcon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
+            onDeleted: () => _deleteLocationOrJp(isLocation: true, name: l),
           );
         }).toList()),
         const Divider(height: 16),
 
-        const Text('JP Names (Pin ⭐ / Edit)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+        const Text('JP Names (Tap to Edit/Rename | 🗑️ to Delete)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
         Row(children: [
-          Expanded(child: TextField(controller: jpCtrl, decoration: const InputDecoration(labelText: 'New JP Name'))),
-          IconButton(icon: const Icon(Icons.add_circle, color: Colors.orange), onPressed: () { if (jpCtrl.text.isNotEmpty) { setState(() => jpNames.add(jpCtrl.text.trim())); _saveData(); jpCtrl.clear(); } }),
+          Expanded(child: TextField(controller: jpCtrl, decoration: const InputDecoration(labelText: 'New JP Name', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)))),
+          const SizedBox(width: 6),
+          IconButton(icon: const Icon(Icons.add_circle, color: Colors.orange, size: 28), onPressed: () { if (jpCtrl.text.isNotEmpty) { setState(() => jpNames.add(jpCtrl.text.trim())); _saveData(); jpCtrl.clear(); } }),
         ]),
+        const SizedBox(height: 6),
         Wrap(spacing: 6, children: jpNames.map((j) {
           final isP = pinnedJpNames.contains(j);
-          return InputChip(
-            avatar: Icon(isP ? Icons.star : Icons.star_border, size: 14, color: Colors.amber.shade900),
-            label: Text(j, style: const TextStyle(fontSize: 11)),
-            onPressed: () { setState(() { isP ? pinnedJpNames.remove(j) : pinnedJpNames.add(j); }); _saveData(); },
-            deleteIcon: const Icon(Icons.edit, size: 14),
-            onDeleted: () => _renameLocationOrJpDialog(isLocation: false, oldName: j),
+          return Chip(
+            avatar: IconButton(
+              padding: EdgeInsets.zero,
+              icon: Icon(isP ? Icons.star : Icons.star_border, size: 16, color: Colors.amber.shade900),
+              onPressed: () { setState(() { isP ? pinnedJpNames.remove(j) : pinnedJpNames.add(j); }); _saveData(); },
+            ),
+            label: InkWell(
+              onTap: () => _renameLocationOrJpDialog(isLocation: false, oldName: j),
+              child: Text(j, style: const TextStyle(fontSize: 11)),
+            ),
+            deleteIcon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
+            onDeleted: () => _deleteLocationOrJp(isLocation: false, name: j),
           );
         }).toList()),
       ],
